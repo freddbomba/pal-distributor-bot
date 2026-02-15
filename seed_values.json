@@ -1,0 +1,56 @@
+[
+  {
+    "category": "volunteer",
+    "description": "Lavoro volontario generico",
+    "pal_per_unit": 1.0,
+    "unit": "hour"
+  },
+  {
+    "category": "cleanup",
+    "description": "Pulizia spazio pubblico",
+    "pal_per_unit": 1.0,
+    "unit": "hour"
+  },
+  {
+    "category": "workshop",
+    "description": "Organizzazione laboratorio",
+    "pal_per_unit": 2.0,
+    "unit": "event"
+  },
+  {
+    "category": "meeting",
+    "description": "Facilitazione riunione",
+    "pal_per_unit": 1.5,
+    "unit": "event"
+  },
+  {
+    "category": "transport",
+    "description": "Trasporto materiali",
+    "pal_per_unit": 1.0,
+    "unit": "hour"
+  },
+  {
+    "category": "cooking",
+    "description": "Preparazione cibo comunitario",
+    "pal_per_unit": 1.0,
+    "unit": "hour"
+  },
+  {
+    "category": "teaching",
+    "description": "Insegnamento/tutoring",
+    "pal_per_unit": 1.5,
+    "unit": "hour"
+  },
+  {
+    "category": "repair",
+    "description": "Riparazione/manutenzione",
+    "pal_per_unit": 1.0,
+    "unit": "hour"
+  },
+  {
+    "category": "organiser_bonus",
+    "description": "Bonus organizzatore evento",
+    "pal_per_unit": 2.0,
+    "unit": "event"
+  }
+]
