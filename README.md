@@ -69,6 +69,28 @@ Seed values can be customised by editing `seed_values.json` before first run.
 
 When a proposal is approved, the bot extracts keywords from the event description and adds the per-participant and organiser values as learned references. Over time, the matrix becomes a community-curated valuation table visible via `/matrix`.
 
+## Design Notes
+
+### Two-Layer Architecture: Governance and Distribution
+
+The bot separates **governance** (who decides) from **distribution** (who receives). The Telegram group is the governance layer — its members propose, endorse, object, and vote. But the PAL network extends well beyond the chat: participants in events, volunteers, and beneficiaries may not be group members at all.
+
+When a proposal is approved, the **full PAL allocation is transferred to the proposer's registered wallet**. The proposer — typically the event organiser — is responsible for redistributing tokens to the actual participants in the wider network. This design is intentional:
+
+- **The network is larger than the chat.** PAL recipients can be anyone with a TON wallet, not just Telegram group members. A cleanup event might involve 20 volunteers, while the governance group has 8 members.
+- **The proposer is the trust anchor.** They organised the event, they know the participants, and the group endorsed their proposal. The governance consensus validates the value produced; the proposer handles the last-mile distribution.
+- **Simplicity over over-engineering.** Requiring all participants to register with the bot would create friction and exclude people who contribute socially but don't use Telegram.
+
+### What the Bot Tracks vs. What It Doesn't
+
+The bot's ledger records **governance decisions**: which proposals were made, endorsed, objected to, and how many PAL were minted. It does not track downstream redistribution from proposer to participants — that happens wallet-to-wallet on the TON blockchain.
+
+This separation keeps the bot focused and leaves room for complementary tools (block explorer dashboards, network visualisation) to map the full flow of PAL through the community.
+
+### Social Matrix as Collective Memory
+
+The social matrix is not a price list — it's a **collective memory** of how the community has valued different activities over time. Seed values provide initial anchoring (1 hour of volunteer work = 1 PAL), but the real signal comes from approved proposals feeding back into the matrix. Over time, the community implicitly develops shared norms for what different contributions are worth, visible to anyone via `/matrix`.
+
 ## Setup
 
 ### Prerequisites
