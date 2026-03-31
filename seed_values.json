@@ -1,15 +1,15 @@
 [
   {
-    "category": "volunteer",
+    "category": "volontario",
     "description": "Lavoro volontario generico",
     "pal_per_unit": 1.0,
-    "unit": "hour"
+    "unit": "mezza giornata"
   },
   {
-    "category": "cleanup",
+    "category": "puliAmo",
     "description": "Pulizia spazio pubblico",
     "pal_per_unit": 1.0,
-    "unit": "hour"
+    "unit": "mezza giornata"
   },
   {
     "category": "workshop",
@@ -24,25 +24,25 @@
     "unit": "event"
   },
   {
-    "category": "transport",
+    "category": "logistica",
     "description": "Trasporto materiali",
     "pal_per_unit": 1.0,
     "unit": "hour"
   },
   {
-    "category": "cooking",
+    "category": "soulkitchen",
     "description": "Preparazione cibo comunitario",
     "pal_per_unit": 1.0,
-    "unit": "hour"
+    "unit": "evento"
   },
   {
-    "category": "teaching",
+    "category": "insegno",
     "description": "Insegnamento/tutoring",
     "pal_per_unit": 1.5,
     "unit": "hour"
   },
   {
-    "category": "repair",
+    "category": "ripariAmo",
     "description": "Riparazione/manutenzione",
     "pal_per_unit": 1.0,
     "unit": "hour"
@@ -50,7 +50,7 @@
   {
     "category": "organiser_bonus",
     "description": "Bonus organizzatore evento",
-    "pal_per_unit": 2.0,
+    "pal_per_unit": 1.0,
     "unit": "event"
   }
 ]
