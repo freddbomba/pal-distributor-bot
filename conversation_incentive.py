@@ -234,4 +234,5 @@ def build_incentive_conversation_handler(timeout_seconds: int) -> ConversationHa
         conversation_timeout=timeout_seconds,
         per_user=True,
         per_chat=False,
+        per_message=False,
     )
