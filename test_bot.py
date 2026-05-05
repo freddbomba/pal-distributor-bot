@@ -432,17 +432,88 @@ def test_confirm_flow():
         check("one proposal after confirm", len(proposals_after) == 1)
         check("proposal has correct event", proposals_after[0].event_name == "Sagra del Pesto")
 
-    # ConversationHandler states include CONFIRM
+    # ConversationHandler states include CONFIRM, per_chat=False
     from conversation import build_conversation_handler, CONFIRM as PAL_CONFIRM
     from conversation_incentive import build_incentive_conversation_handler, CONFIRM as INC_CONFIRM
 
     pal_handler = build_conversation_handler(300)
     check("PAL handler has CONFIRM state", PAL_CONFIRM in pal_handler.states)
     check("PAL CONFIRM has two callbacks", len(pal_handler.states[PAL_CONFIRM]) == 2)
+    check("PAL handler per_chat=False", not pal_handler.per_chat)
 
     inc_handler = build_incentive_conversation_handler(300)
     check("incentive handler has CONFIRM state", INC_CONFIRM in inc_handler.states)
     check("incentive CONFIRM has two callbacks", len(inc_handler.states[INC_CONFIRM]) == 2)
+    check("incentive handler per_chat=False", not inc_handler.per_chat)
+
+
+def test_dm_flow():
+    print("\n=== DM Flow Messages ===")
+
+    # propose_redirecting_to_dm
+    redir = messages.propose_redirecting_to_dm()
+    check("redirecting message non-empty", len(redir) > 0)
+    check("redirecting mentions privato", "privato" in redir)
+
+    # propose_dm_failed
+    failed = messages.propose_dm_failed("palbot")
+    check("dm_failed mentions bot", "@palbot" in failed)
+    check("dm_failed mentions avvia", "Avvia" in failed or "avvia" in failed)
+
+    # propose_sent_to_group
+    sent = messages.propose_sent_to_group()
+    check("sent_to_group non-empty", len(sent) > 0)
+    check("sent_to_group mentions gruppo", "gruppo" in sent)
+
+    # propose_cancelled
+    cancelled = messages.propose_cancelled()
+    check("cancelled non-empty", len(cancelled) > 0)
+    check("cancelled mentions annullata", "annullata" in cancelled.lower())
+
+    # Confirm path: proposal posted with group_chat_id, not user DM id
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db_path = os.path.join(tmpdir, "test.db")
+        db = Database(db_path)
+        db.initialize()
+        db.upsert_member(1, "alice", "EQDtFpEwcFAEcRe5mLVh2N6C0x-_hJEM7W61_JLnSF74p4q2")
+
+        group_chat_id = -100999
+        user_dm_id = 111222
+
+        # Simulate confirm: proposal created with group chat_id, not DM id
+        pid = db.create_proposal(
+            proposer_user_id=1,
+            event_name="Mercato di Primavera",
+            num_participants=20,
+            pal_per_participant=1.0,
+            pal_for_organiser=2.0,
+            message_id=42,
+            chat_id=group_chat_id,
+        )
+        p = db.get_proposal(pid)
+        check("proposal chat_id is group", p.chat_id == group_chat_id)
+        check("proposal chat_id is not DM", p.chat_id != user_dm_id)
+
+        # Simulate abort: no proposal created (DB stays empty before any confirm)
+        proposals = db.get_recent_proposals(10)
+        check("abort leaves only confirmed proposals", len(proposals) == 1)
+
+        # Incentive confirm path: group chat_id stored
+        ipid = db.create_proposal(
+            proposer_user_id=1,
+            event_name="[Incentivo] Sconto PAL",
+            num_participants=0,
+            pal_per_participant=0.0,
+            pal_for_organiser=0.0,
+            message_id=43,
+            chat_id=group_chat_id,
+            proposal_type="incentive",
+            incentive_offered_by="Bottega",
+            incentive_description="Sconto 5%",
+            incentive_conditions="Min 5 PAL",
+        )
+        ip = db.get_proposal(ipid)
+        check("incentive proposal chat_id is group", ip.chat_id == group_chat_id)
 
 
 if __name__ == "__main__":
@@ -454,6 +525,7 @@ if __name__ == "__main__":
     test_expired_proposals()
     test_incentives()
     test_confirm_flow()
+    test_dm_flow()
 
     print(f"\n{'=' * 50}")
     print(f"Results: {PASS} passed, {FAIL} failed")

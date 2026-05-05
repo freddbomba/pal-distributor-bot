@@ -20,8 +20,10 @@ OFFERED_BY, INCENTIVE_DESC, CONDITIONS, CONFIRM = range(4)
 
 
 async def propose_incentive_start(update: Update, context: CallbackContext) -> int:
+    """Entry point: /propose_incentive. Redirect to DM if in group."""
     db = context.bot_data["db"]
     user = update.effective_user
+    chat = update.effective_chat
     member = db.get_member(user.id)
 
     if not member:
@@ -41,7 +43,19 @@ async def propose_incentive_start(update: Update, context: CallbackContext) -> i
     context.user_data.clear()
     context.user_data["proposer_user_id"] = user.id
 
-    await update.message.reply_text(messages.propose_incentive_ask_offered_by())
+    if chat.type in ("group", "supergroup"):
+        await update.message.reply_text(messages.propose_redirecting_to_dm())
+        try:
+            await context.bot.send_message(
+                chat_id=user.id,
+                text=messages.propose_incentive_ask_offered_by(),
+            )
+        except Exception:
+            await update.message.reply_text(messages.propose_dm_failed(context.bot.username))
+            return ConversationHandler.END
+    else:
+        await update.message.reply_text(messages.propose_incentive_ask_offered_by())
+
     return OFFERED_BY
 
 
@@ -94,13 +108,15 @@ async def receive_conditions(update: Update, context: CallbackContext) -> int:
 
 
 async def confirm_incentive_proposal(update: Update, context: CallbackContext) -> int:
-    """User confirmed — create the incentive proposal and post the public summary."""
+    """User confirmed — post incentive proposal to group, confirm in DM."""
     query = update.callback_query
     await query.answer()
 
     db = context.bot_data["db"]
+    config = context.bot_data["config"]
     user = query.from_user
     data = context.user_data
+    group_chat_id = config["telegram_group_chat_id"]
 
     rate_limits = context.bot_data.setdefault('rate_limits', {})
     rate_limits[user.id] = time.time()
@@ -110,7 +126,11 @@ async def confirm_incentive_proposal(update: Update, context: CallbackContext) -
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("Appoggia / Endorse", callback_data="endorse:0")]
     ])
-    placeholder = await query.message.reply_text("Creazione proposta incentivo...", reply_markup=keyboard)
+    placeholder = await context.bot.send_message(
+        chat_id=group_chat_id,
+        text="Creazione proposta incentivo...",
+        reply_markup=keyboard,
+    )
 
     event_name = f"[Incentivo] {data['incentive_description'][:60]}"
     proposal_id = db.create_proposal(
@@ -120,7 +140,7 @@ async def confirm_incentive_proposal(update: Update, context: CallbackContext) -
         pal_per_participant=0.0,
         pal_for_organiser=0.0,
         message_id=placeholder.message_id,
-        chat_id=query.message.chat_id,
+        chat_id=group_chat_id,
         proposal_type="incentive",
         incentive_offered_by=data["incentive_offered_by"],
         incentive_description=data["incentive_description"],
@@ -142,6 +162,7 @@ async def confirm_incentive_proposal(update: Update, context: CallbackContext) -
     except Exception:
         pass
 
+    await query.message.reply_text(messages.propose_sent_to_group())
     context.user_data.clear()
     return ConversationHandler.END
 
@@ -151,13 +172,13 @@ async def abort_incentive_proposal(update: Update, context: CallbackContext) -> 
     query = update.callback_query
     await query.answer()
     context.user_data.clear()
-    await query.edit_message_text("Proposta incentivo annullata.")
+    await query.edit_message_text(messages.propose_cancelled())
     return ConversationHandler.END
 
 
 async def cancel_incentive(update: Update, context: CallbackContext) -> int:
     context.user_data.clear()
-    await update.message.reply_text("Proposta incentivo annullata.")
+    await update.message.reply_text(messages.propose_cancelled())
     return ConversationHandler.END
 
 
@@ -195,5 +216,5 @@ def build_incentive_conversation_handler(timeout_seconds: int) -> ConversationHa
         fallbacks=[CommandHandler("cancel", cancel_incentive)],
         conversation_timeout=timeout_seconds,
         per_user=True,
-        per_chat=True,
+        per_chat=False,
     )

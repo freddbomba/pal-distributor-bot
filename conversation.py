@@ -22,16 +22,16 @@ EVENT_NAME, NUM_PARTICIPANTS, PAL_PER_PARTICIPANT, PAL_FOR_ORGANISER, CONFIRM = 
 
 
 async def propose_start(update: Update, context: CallbackContext) -> int:
-    """Entry point: /propose command. Check registration, ask for event name."""
+    """Entry point: /propose command. Check registration, redirect to DM if in group."""
     db = context.bot_data["db"]
     user = update.effective_user
+    chat = update.effective_chat
     member = db.get_member(user.id)
 
     if not member:
         await update.message.reply_text(messages.not_registered())
         return ConversationHandler.END
 
-    # Rate limit check
     config = context.bot_data['config']
     cooldown = config['propose_cooldown_seconds']
     rate_limits = context.bot_data.setdefault('rate_limits', {})
@@ -42,11 +42,19 @@ async def propose_start(update: Update, context: CallbackContext) -> int:
         await update.message.reply_text(messages.propose_cooldown(remaining))
         return ConversationHandler.END
 
-    # Clear any previous draft
     context.user_data.clear()
     context.user_data["proposer_user_id"] = user.id
 
-    await update.message.reply_text(messages.propose_ask_event())
+    if chat.type in ("group", "supergroup"):
+        await update.message.reply_text(messages.propose_redirecting_to_dm())
+        try:
+            await context.bot.send_message(chat_id=user.id, text=messages.propose_ask_event())
+        except Exception:
+            await update.message.reply_text(messages.propose_dm_failed(context.bot.username))
+            return ConversationHandler.END
+    else:
+        await update.message.reply_text(messages.propose_ask_event())
+
     return EVENT_NAME
 
 
@@ -140,13 +148,15 @@ async def receive_pal_organiser(update: Update, context: CallbackContext) -> int
 
 
 async def confirm_proposal(update: Update, context: CallbackContext) -> int:
-    """User confirmed — create the proposal and post the public summary."""
+    """User confirmed — post proposal to group, confirm in DM."""
     query = update.callback_query
     await query.answer()
 
     db = context.bot_data["db"]
+    config = context.bot_data["config"]
     user = query.from_user
     data = context.user_data
+    group_chat_id = config["telegram_group_chat_id"]
 
     rate_limits = context.bot_data.setdefault('rate_limits', {})
     rate_limits[user.id] = time.time()
@@ -156,7 +166,11 @@ async def confirm_proposal(update: Update, context: CallbackContext) -> int:
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("Appoggia / Endorse", callback_data="endorse:0")]
     ])
-    placeholder = await query.message.reply_text("Creazione proposta...", reply_markup=keyboard)
+    placeholder = await context.bot.send_message(
+        chat_id=group_chat_id,
+        text="Creazione proposta...",
+        reply_markup=keyboard,
+    )
 
     proposal_id = db.create_proposal(
         proposer_user_id=data["proposer_user_id"],
@@ -165,7 +179,7 @@ async def confirm_proposal(update: Update, context: CallbackContext) -> int:
         pal_per_participant=data["pal_per_participant"],
         pal_for_organiser=data["pal_for_organiser"],
         message_id=placeholder.message_id,
-        chat_id=query.message.chat_id,
+        chat_id=group_chat_id,
     )
 
     proposal = db.get_proposal(proposal_id)
@@ -183,6 +197,7 @@ async def confirm_proposal(update: Update, context: CallbackContext) -> int:
     except Exception:
         pass
 
+    await query.message.reply_text(messages.propose_sent_to_group())
     context.user_data.clear()
     return ConversationHandler.END
 
@@ -192,14 +207,14 @@ async def abort_proposal(update: Update, context: CallbackContext) -> int:
     query = update.callback_query
     await query.answer()
     context.user_data.clear()
-    await query.edit_message_text("Proposta annullata.")
+    await query.edit_message_text(messages.propose_cancelled())
     return ConversationHandler.END
 
 
 async def cancel(update: Update, context: CallbackContext) -> int:
-    """Cancel the conversation."""
+    """Cancel the conversation via /cancel command."""
     context.user_data.clear()
-    await update.message.reply_text("Proposta annullata.")
+    await update.message.reply_text(messages.propose_cancelled())
     return ConversationHandler.END
 
 
@@ -242,5 +257,5 @@ def build_conversation_handler(timeout_seconds: int) -> ConversationHandler:
         fallbacks=[CommandHandler("cancel", cancel)],
         conversation_timeout=timeout_seconds,
         per_user=True,
-        per_chat=True,
+        per_chat=False,
     )

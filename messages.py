@@ -49,6 +49,25 @@ def invalid_ton_address():
 
 # --- Proposal conversation ---
 
+def propose_redirecting_to_dm() -> str:
+    return "Ti scrivo in privato per compilare la proposta."
+
+
+def propose_dm_failed(bot_username: str) -> str:
+    return (
+        f"Non riesco a scriverti in privato. "
+        f"Avvia prima una chat con me: @{bot_username}"
+    )
+
+
+def propose_sent_to_group() -> str:
+    return "Proposta inviata al gruppo!"
+
+
+def propose_cancelled() -> str:
+    return "Proposta annullata."
+
+
 def propose_ask_event():
     return "Qual e' l'evento? Descrivi brevemente l'attivita' per cui richiedi PAL."
 
