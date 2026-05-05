@@ -5,7 +5,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=fredd
+User=root
 WorkingDirectory=/opt/telegram-bot/pal-distributor-bot
 ExecStart=/opt/telegram-bot/pal-distributor-bot/venv/bin/python bot.py
 Restart=on-failure

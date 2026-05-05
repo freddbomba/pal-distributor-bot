@@ -1,6 +1,7 @@
 """Guided /propose conversation flow using python-telegram-bot ConversationHandler."""
 
 import logging
+import time
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ConversationHandler,
@@ -28,6 +29,19 @@ async def propose_start(update: Update, context: CallbackContext) -> int:
     if not member:
         await update.message.reply_text(messages.not_registered())
         return ConversationHandler.END
+
+    # Rate limit check
+    config = context.bot_data['config']
+    cooldown = config['propose_cooldown_seconds']
+    rate_limits = context.bot_data.setdefault('rate_limits', {})
+    last_time = rate_limits.get(user.id, 0)
+    elapsed = time.time() - last_time
+    if elapsed < cooldown:
+        remaining = int(cooldown - elapsed)
+        await update.message.reply_text(messages.propose_cooldown(remaining))
+        return ConversationHandler.END
+
+    rate_limits[user.id] = time.time()
 
     # Clear any previous draft
     context.user_data.clear()

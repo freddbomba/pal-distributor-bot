@@ -87,6 +87,14 @@ def propose_timeout():
     return "Tempo scaduto per la proposta. Usa /propose per ricominciare."
 
 
+def propose_cooldown(remaining_seconds: int):
+    minutes = remaining_seconds // 60
+    if minutes > 0:
+        return f"Devi aspettare ancora {minutes} minuti prima di proporre di nuovo."
+    return f"Devi aspettare ancora {remaining_seconds} secondi prima di proporre di nuovo."
+
+
+
 # --- Endorsement ---
 
 def endorsed(proposal: Proposal, endorser_name: str):
