@@ -420,3 +420,44 @@ async def matrix_handler(update: Update, context: CallbackContext):
 
 async def help_handler(update: Update, context: CallbackContext):
     await update.message.reply_text(messages.help_text())
+
+
+# --- /incentives ---
+
+async def incentives_handler(update: Update, context: CallbackContext):
+    db = context.bot_data["db"]
+    incentives = db.get_active_incentives()
+    await update.message.reply_text(messages.incentives_list(incentives))
+
+
+# --- /expire_incentive (admin) ---
+
+async def expire_incentive_handler(update: Update, context: CallbackContext):
+    db = context.bot_data["db"]
+    config = context.bot_data["config"]
+    user = update.effective_user
+
+    if not _is_admin(user.id, config):
+        await update.message.reply_text(messages.admin_only())
+        return
+
+    if not context.args or len(context.args) != 1:
+        await update.message.reply_text("Uso: /expire_incentive <id>")
+        return
+
+    try:
+        incentive_id = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("ID incentivo non valido.")
+        return
+
+    incentive = db.get_incentive(incentive_id)
+    if not incentive:
+        await update.message.reply_text(messages.incentive_not_found(incentive_id))
+        return
+
+    success = db.expire_incentive(incentive_id)
+    if success:
+        await update.message.reply_text(messages.incentive_expired_msg(incentive_id))
+    else:
+        await update.message.reply_text(f"Incentivo #{incentive_id} non e' attivo.")

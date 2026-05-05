@@ -4,7 +4,7 @@ import os
 from datetime import datetime, timedelta
 from typing import Optional
 
-from models import Member, Proposal, LedgerEntry, ReferenceValue
+from models import Member, Proposal, LedgerEntry, ReferenceValue, Incentive
 
 
 class Database:
@@ -68,7 +68,33 @@ class Database:
                 proposal_id        INTEGER REFERENCES proposals(id),
                 created_at         TEXT NOT NULL DEFAULT (datetime('now'))
             );
+
+            CREATE TABLE IF NOT EXISTS incentives (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                description TEXT NOT NULL,
+                offered_by  TEXT NOT NULL,
+                conditions  TEXT NOT NULL,
+                status      TEXT NOT NULL DEFAULT 'active',
+                created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+                proposal_id INTEGER REFERENCES proposals(id)
+            );
         """)
+        self.conn.commit()
+        self._migrate()
+
+    def _migrate(self):
+        """Add columns introduced after the initial schema without breaking existing data."""
+        migrations = [
+            "ALTER TABLE proposals ADD COLUMN proposal_type TEXT NOT NULL DEFAULT 'pal_distribution'",
+            "ALTER TABLE proposals ADD COLUMN incentive_offered_by TEXT",
+            "ALTER TABLE proposals ADD COLUMN incentive_description TEXT",
+            "ALTER TABLE proposals ADD COLUMN incentive_conditions TEXT",
+        ]
+        for sql in migrations:
+            try:
+                self.conn.execute(sql)
+            except Exception:
+                pass  # column already exists
         self.conn.commit()
 
     def load_seed_values(self, seed_file: str):
@@ -121,15 +147,21 @@ class Database:
         pal_for_organiser: float,
         message_id: int,
         chat_id: int,
+        proposal_type: str = 'pal_distribution',
+        incentive_offered_by: Optional[str] = None,
+        incentive_description: Optional[str] = None,
+        incentive_conditions: Optional[str] = None,
     ) -> int:
         total = (num_participants * pal_per_participant) + pal_for_organiser
         cursor = self.conn.execute(
             "INSERT INTO proposals "
             "(proposer_user_id, event_name, num_participants, pal_per_participant, "
-            "pal_for_organiser, total_amount, message_id, chat_id) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "pal_for_organiser, total_amount, message_id, chat_id, proposal_type, "
+            "incentive_offered_by, incentive_description, incentive_conditions) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (proposer_user_id, event_name, num_participants, pal_per_participant,
-             pal_for_organiser, total, message_id, chat_id),
+             pal_for_organiser, total, message_id, chat_id, proposal_type,
+             incentive_offered_by, incentive_description, incentive_conditions),
         )
         self.conn.commit()
         return cursor.lastrowid
@@ -185,7 +217,7 @@ class Database:
         self.conn.commit()
         return affected > 0
 
-    def approve_proposal(self, proposal_id: int, tx_hash: str):
+    def approve_proposal(self, proposal_id: int, tx_hash: Optional[str] = None):
         """Mark proposal as approved after successful Jetton transfer."""
         now = datetime.utcnow()
         affected = self.conn.execute(
@@ -302,3 +334,38 @@ class Database:
             (category, description, pal_per_unit, unit, proposal_id),
         )
         self.conn.commit()
+
+    # --- Incentives ---
+
+    def create_incentive(
+        self, description: str, offered_by: str, conditions: str, proposal_id: int
+    ) -> int:
+        cursor = self.conn.execute(
+            "INSERT INTO incentives (description, offered_by, conditions, proposal_id) "
+            "VALUES (?, ?, ?, ?)",
+            (description, offered_by, conditions, proposal_id),
+        )
+        self.conn.commit()
+        return cursor.lastrowid
+
+    def get_active_incentives(self) -> list[Incentive]:
+        rows = self.conn.execute(
+            "SELECT * FROM incentives WHERE status = 'active' ORDER BY created_at DESC"
+        ).fetchall()
+        return [Incentive(**dict(r)) for r in rows]
+
+    def get_incentive(self, incentive_id: int) -> Optional[Incentive]:
+        row = self.conn.execute(
+            "SELECT * FROM incentives WHERE id = ?", (incentive_id,)
+        ).fetchone()
+        if not row:
+            return None
+        return Incentive(**dict(row))
+
+    def expire_incentive(self, incentive_id: int) -> bool:
+        affected = self.conn.execute(
+            "UPDATE incentives SET status = 'expired' WHERE id = ? AND status = 'active'",
+            (incentive_id,),
+        ).rowcount
+        self.conn.commit()
+        return affected > 0

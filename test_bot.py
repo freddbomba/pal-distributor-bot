@@ -288,6 +288,112 @@ def test_expired_proposals():
         check("no stale with long window", not any(s.id == pid3 for s in stale_none))
 
 
+def test_incentives():
+    print("\n=== Incentives ===")
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db_path = os.path.join(tmpdir, "test.db")
+        db = Database(db_path)
+        db.initialize()
+
+        db.upsert_member(1, "alice", "EQDtFpEwcFAEcRe5mLVh2N6C0x-_hJEM7W61_JLnSF74p4q2")
+        db.upsert_member(2, "bob", "EQDtFpEwcFAEcRe5mLVh2N6C0x-_hJEM7W61_JLnSF74p4q2")
+
+        # Incentive proposal creation
+        pid = db.create_proposal(
+            proposer_user_id=1,
+            event_name="[Incentivo] 5% di sconto in PAL",
+            num_participants=0,
+            pal_per_participant=0.0,
+            pal_for_organiser=0.0,
+            message_id=1111,
+            chat_id=-100,
+            proposal_type="incentive",
+            incentive_offered_by="Bottega del Pane",
+            incentive_description="5% di sconto pagando in PAL",
+            incentive_conditions="Acquisti superiori a 5 PAL",
+        )
+        check("incentive proposal created", pid is not None and pid > 0)
+
+        p = db.get_proposal(pid)
+        check("proposal_type is incentive", p.proposal_type == "incentive")
+        check("incentive_offered_by set", p.incentive_offered_by == "Bottega del Pane")
+        check("incentive_description set", p.incentive_description == "5% di sconto pagando in PAL")
+        check("incentive_conditions set", p.incentive_conditions == "Acquisti superiori a 5 PAL")
+        check("total_amount is 0", p.total_amount == 0.0)
+
+        # PAL proposal still defaults correctly
+        pid_pal = db.create_proposal(1, "Evento test", 5, 2.0, 1.0, 2222, -100)
+        p_pal = db.get_proposal(pid_pal)
+        check("pal proposal type default", p_pal.proposal_type == "pal_distribution")
+        check("pal proposal no incentive fields", p_pal.incentive_offered_by is None)
+
+        # Approve incentive proposal and create incentive record
+        db.endorse_proposal(pid, 2, 24.0)
+        db.approve_proposal(pid)
+        inc_id = db.create_incentive(
+            description=p.incentive_description,
+            offered_by=p.incentive_offered_by,
+            conditions=p.incentive_conditions,
+            proposal_id=pid,
+        )
+        check("incentive record created", inc_id is not None and inc_id > 0)
+
+        inc = db.get_incentive(inc_id)
+        check("incentive get works", inc is not None)
+        check("incentive description", inc.description == "5% di sconto pagando in PAL")
+        check("incentive offered_by", inc.offered_by == "Bottega del Pane")
+        check("incentive conditions", inc.conditions == "Acquisti superiori a 5 PAL")
+        check("incentive status active", inc.status == "active")
+        check("incentive proposal_id", inc.proposal_id == pid)
+
+        # Active incentives listing
+        active = db.get_active_incentives()
+        check("active incentives has one", len(active) == 1)
+        check("active incentive id matches", active[0].id == inc_id)
+
+        # Expiration
+        ok = db.expire_incentive(inc_id)
+        check("expire returns true", ok)
+        inc_after = db.get_incentive(inc_id)
+        check("incentive now expired", inc_after.status == "expired")
+        active_after = db.get_active_incentives()
+        check("no active incentives after expire", len(active_after) == 0)
+        ok2 = db.expire_incentive(inc_id)
+        check("cannot expire twice", not ok2)
+
+        # Messages
+        from models import Incentive
+        fake_inc = Incentive(
+            id=1, description="Sconto 10%", offered_by="Negozio Test",
+            conditions="Min 10 PAL", status="active", created_at="2025-01-01"
+        )
+        listing = messages.incentives_list([fake_inc])
+        check("incentives list shows offered_by", "Negozio Test" in listing)
+        check("incentives list shows description", "Sconto 10%" in listing)
+        check("incentives list shows conditions", "Min 10 PAL" in listing)
+
+        empty_listing = messages.incentives_list([])
+        check("empty incentives message", "Nessun incentivo" in empty_listing)
+
+        # propose_incentive_summary
+        proposal_for_msg = db.get_proposal(pid)
+        summary = messages.propose_incentive_summary(proposal_for_msg, "@alice")
+        check("incentive summary has offered_by", "Bottega del Pane" in summary)
+        check("incentive summary has description", "5% di sconto" in summary)
+        check("incentive summary has proposer", "@alice" in summary)
+
+        # auto_approved_incentive
+        approved_msg = messages.auto_approved_incentive(proposal_for_msg, fake_inc)
+        check("auto_approved_incentive has ATTIVATO", "ATTIVATO" in approved_msg)
+        check("auto_approved_incentive has offered_by", "Negozio Test" in approved_msg)
+        check("auto_approved_incentive references proposal", str(pid) in approved_msg)
+
+        # Help text includes new commands
+        check("help has propose_incentive", "/propose_incentive" in messages.help_text())
+        check("help has incentives", "/incentives" in messages.help_text())
+        check("help has expire_incentive", "/expire_incentive" in messages.help_text())
+
+
 if __name__ == "__main__":
     test_config()
     test_utils()
@@ -295,6 +401,7 @@ if __name__ == "__main__":
     test_social_matrix()
     test_messages()
     test_expired_proposals()
+    test_incentives()
 
     print(f"\n{'=' * 50}")
     print(f"Results: {PASS} passed, {FAIL} failed")

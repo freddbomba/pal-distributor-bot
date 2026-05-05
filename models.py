@@ -32,6 +32,21 @@ class Proposal:
     objection_reason: Optional[str] = None
     objected_at: Optional[str] = None
     reinstated_at: Optional[str] = None
+    proposal_type: str = 'pal_distribution'
+    incentive_offered_by: Optional[str] = None
+    incentive_description: Optional[str] = None
+    incentive_conditions: Optional[str] = None
+
+
+@dataclass
+class Incentive:
+    id: int
+    description: str
+    offered_by: str
+    conditions: str
+    status: str  # active / expired / revoked
+    created_at: str
+    proposal_id: Optional[int] = None
 
 
 @dataclass

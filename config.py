@@ -28,6 +28,7 @@ def load_config() -> dict:
         "proposal_expiry_hours": float(os.getenv("PROPOSAL_EXPIRY_HOURS", "24")),
         "endorsement_expiry_hours": float(os.getenv("ENDORSEMENT_EXPIRY_HOURS", "48")),
         "max_proposal_amount": float(os.getenv("MAX_PROPOSAL_AMOUNT", "1000")),
+        "propose_cooldown_seconds": int(os.getenv("PROPOSE_COOLDOWN_SECONDS", "3600")),
         "conversation_timeout_seconds": int(os.getenv("CONVERSATION_TIMEOUT_SECONDS", "300")),
         "scheduler_interval_seconds": int(os.getenv("SCHEDULER_INTERVAL_SECONDS", "120")),
         # Database

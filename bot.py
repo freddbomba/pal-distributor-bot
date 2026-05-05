@@ -13,6 +13,7 @@ from config import load_config
 from database import Database
 from jetton import JettonTransfer
 from conversation import build_conversation_handler
+from conversation_incentive import build_incentive_conversation_handler
 from handlers import (
     register_handler,
     endorse_command_handler,
@@ -27,6 +28,8 @@ from handlers import (
     status_handler,
     matrix_handler,
     help_handler,
+    incentives_handler,
+    expire_incentive_handler,
 )
 from scheduler import check_expired_proposals
 
@@ -73,9 +76,12 @@ def main():
     app.bot_data["jetton"] = jetton
     app.bot_data["config"] = config
 
-    # Register conversation handler for /propose (must be added before generic handlers)
+    # Register conversation handlers (must be added before generic command handlers)
     conv_handler = build_conversation_handler(config["conversation_timeout_seconds"])
     app.add_handler(conv_handler)
+
+    incentive_conv_handler = build_incentive_conversation_handler(config["conversation_timeout_seconds"])
+    app.add_handler(incentive_conv_handler)
 
     # Register command handlers
     app.add_handler(CommandHandler("register", register_handler))
@@ -88,6 +94,8 @@ def main():
     app.add_handler(CommandHandler("balance", balance_handler))
     app.add_handler(CommandHandler("status", status_handler))
     app.add_handler(CommandHandler("matrix", matrix_handler))
+    app.add_handler(CommandHandler("incentives", incentives_handler))
+    app.add_handler(CommandHandler("expire_incentive", expire_incentive_handler))
     app.add_handler(CommandHandler("help", help_handler))
     app.add_handler(CommandHandler("start", help_handler))
 

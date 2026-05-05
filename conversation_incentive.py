@@ -1,0 +1,156 @@
+"""Guided /propose_incentive conversation flow."""
+
+import logging
+import time
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    ConversationHandler,
+    CommandHandler,
+    MessageHandler,
+    CallbackContext,
+    filters,
+)
+
+import messages
+
+logger = logging.getLogger(__name__)
+
+OFFERED_BY, INCENTIVE_DESC, CONDITIONS = range(3)
+
+
+async def propose_incentive_start(update: Update, context: CallbackContext) -> int:
+    db = context.bot_data["db"]
+    user = update.effective_user
+    member = db.get_member(user.id)
+
+    if not member:
+        await update.message.reply_text(messages.not_registered())
+        return ConversationHandler.END
+
+    config = context.bot_data['config']
+    cooldown = config['propose_cooldown_seconds']
+    rate_limits = context.bot_data.setdefault('rate_limits', {})
+    last_time = rate_limits.get(user.id, 0)
+    elapsed = time.time() - last_time
+    if elapsed < cooldown:
+        remaining = int(cooldown - elapsed)
+        await update.message.reply_text(messages.propose_cooldown(remaining))
+        return ConversationHandler.END
+
+    context.user_data.clear()
+    context.user_data["proposer_user_id"] = user.id
+
+    await update.message.reply_text(messages.propose_incentive_ask_offered_by())
+    return OFFERED_BY
+
+
+async def receive_offered_by(update: Update, context: CallbackContext) -> int:
+    offered_by = update.message.text.strip()
+    if not offered_by:
+        await update.message.reply_text(messages.propose_incentive_ask_offered_by())
+        return OFFERED_BY
+
+    context.user_data["incentive_offered_by"] = offered_by
+    await update.message.reply_text(messages.propose_incentive_ask_description())
+    return INCENTIVE_DESC
+
+
+async def receive_incentive_desc(update: Update, context: CallbackContext) -> int:
+    description = update.message.text.strip()
+    if not description:
+        await update.message.reply_text(messages.propose_incentive_ask_description())
+        return INCENTIVE_DESC
+
+    context.user_data["incentive_description"] = description
+    await update.message.reply_text(messages.propose_incentive_ask_conditions())
+    return CONDITIONS
+
+
+async def receive_conditions(update: Update, context: CallbackContext) -> int:
+    db = context.bot_data["db"]
+    conditions = update.message.text.strip()
+
+    if not conditions:
+        await update.message.reply_text(messages.propose_incentive_ask_conditions())
+        return CONDITIONS
+
+    context.user_data["incentive_conditions"] = conditions
+    data = context.user_data
+    user = update.effective_user
+
+    rate_limits = context.bot_data.setdefault('rate_limits', {})
+    rate_limits[user.id] = time.time()
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("Appoggia / Endorse", callback_data="endorse:0")]
+    ])
+    placeholder = await update.message.reply_text("Creazione proposta incentivo...", reply_markup=keyboard)
+
+    event_name = f"[Incentivo] {data['incentive_description'][:60]}"
+    proposal_id = db.create_proposal(
+        proposer_user_id=data["proposer_user_id"],
+        event_name=event_name,
+        num_participants=0,
+        pal_per_participant=0.0,
+        pal_for_organiser=0.0,
+        message_id=placeholder.message_id,
+        chat_id=update.effective_chat.id,
+        proposal_type="incentive",
+        incentive_offered_by=data["incentive_offered_by"],
+        incentive_description=data["incentive_description"],
+        incentive_conditions=data["incentive_conditions"],
+    )
+
+    proposal = db.get_proposal(proposal_id)
+    proposer_name = f"@{user.username}" if user.username else user.full_name
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("Appoggia / Endorse", callback_data=f"endorse:{proposal_id}")]
+    ])
+    await placeholder.edit_text(
+        text=messages.propose_incentive_summary(proposal, proposer_name),
+        reply_markup=keyboard,
+    )
+
+    context.user_data.clear()
+    return ConversationHandler.END
+
+
+async def cancel_incentive(update: Update, context: CallbackContext) -> int:
+    context.user_data.clear()
+    await update.message.reply_text("Proposta incentivo annullata.")
+    return ConversationHandler.END
+
+
+async def timeout_incentive(update: Update, context: CallbackContext) -> int:
+    context.user_data.clear()
+    if update and update.effective_chat:
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=messages.propose_timeout(),
+        )
+    return ConversationHandler.END
+
+
+def build_incentive_conversation_handler(timeout_seconds: int) -> ConversationHandler:
+    return ConversationHandler(
+        entry_points=[CommandHandler("propose_incentive", propose_incentive_start)],
+        states={
+            OFFERED_BY: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_offered_by)
+            ],
+            INCENTIVE_DESC: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_incentive_desc)
+            ],
+            CONDITIONS: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_conditions)
+            ],
+            ConversationHandler.TIMEOUT: [
+                MessageHandler(filters.ALL, timeout_incentive)
+            ],
+        },
+        fallbacks=[CommandHandler("cancel", cancel_incentive)],
+        conversation_timeout=timeout_seconds,
+        per_user=True,
+        per_chat=True,
+    )

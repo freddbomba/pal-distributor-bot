@@ -16,10 +16,13 @@ def help_text():
         "Comandi disponibili:\n\n"
         "/register <indirizzo_TON> - Registra il tuo wallet TON\n"
         "/propose - Avvia una proposta di distribuzione PAL (guidata)\n"
+        "/propose_incentive - Proponi un nuovo incentivo per la rete\n"
+        "/incentives - Elenca gli incentivi attivi\n"
         "/endorse <id> - Appoggia una proposta in attesa\n"
         "/object <id> <motivo> - Obietta a una proposta (motivo obbligatorio)\n"
         "/reinstate <id> - [Admin] Ripristina una proposta in sospeso\n"
         "/reject <id> - [Admin] Rifiuta una proposta in sospeso\n"
+        "/expire_incentive <id> - [Admin] Contrassegna un incentivo come scaduto\n"
         "/history [n] - Mostra le ultime n proposte (default 10)\n"
         "/myproposals - Mostra le tue proposte\n"
         "/balance - Mostra il saldo PAL della tesoreria\n"
@@ -278,3 +281,56 @@ def wrong_status(proposal_id: int, expected: str, actual: str):
         f"Proposta #{proposal_id} non e' nello stato corretto.\n"
         f"Stato attuale: {format_status(actual)}, richiesto: {format_status(expected)}"
     )
+
+
+# --- Incentive conversation ---
+
+def propose_incentive_ask_offered_by():
+    return "Chi offre questo incentivo? (es. 'Bottega del Pane Boccadasse')"
+
+
+def propose_incentive_ask_description():
+    return "Descrivi l'incentivo. (es. '5% di sconto pagando in PAL')"
+
+
+def propose_incentive_ask_conditions():
+    return "Quali sono le condizioni per ottenerlo? (es. 'Acquisti superiori a 10 PAL')"
+
+
+def propose_incentive_summary(proposal: Proposal, proposer_name: str) -> str:
+    return (
+        f"Proposta Incentivo #{proposal.id}\n"
+        f"Offerto da: {proposal.incentive_offered_by}\n"
+        f"Incentivo: {proposal.incentive_description}\n"
+        f"Condizioni: {proposal.incentive_conditions}\n"
+        f"Proposta da: {proposer_name}\n\n"
+        f"In attesa di appoggio da un altro membro."
+    )
+
+
+def auto_approved_incentive(proposal: Proposal, incentive) -> str:
+    return (
+        f"Incentivo #{incentive.id} ATTIVATO!\n"
+        f"Offerto da: {incentive.offered_by}\n"
+        f"Incentivo: {incentive.description}\n"
+        f"Condizioni: {incentive.conditions}\n"
+        f"(Proposta #{proposal.id} approvata per consenso)"
+    )
+
+
+def incentives_list(incentives: list) -> str:
+    if not incentives:
+        return "Nessun incentivo attivo al momento."
+    lines = ["Incentivi attivi:\n"]
+    for inc in incentives:
+        lines.append(f"#{inc.id} — {inc.offered_by}: {inc.description}")
+        lines.append(f"   Condizioni: {inc.conditions}\n")
+    return "\n".join(lines)
+
+
+def incentive_expired_msg(incentive_id: int) -> str:
+    return f"Incentivo #{incentive_id} contrassegnato come scaduto."
+
+
+def incentive_not_found(incentive_id: int) -> str:
+    return f"Incentivo #{incentive_id} non trovato."
