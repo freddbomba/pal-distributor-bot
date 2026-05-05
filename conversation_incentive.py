@@ -13,6 +13,7 @@ from telegram.ext import (
 )
 
 import messages
+from menu import back_keyboard
 
 logger = logging.getLogger(__name__)
 
@@ -20,14 +21,24 @@ OFFERED_BY, INCENTIVE_DESC, CONDITIONS, CONFIRM = range(4)
 
 
 async def propose_incentive_start(update: Update, context: CallbackContext) -> int:
-    """Entry point: /propose_incentive. Redirect to DM if in group."""
+    """Entry point: /propose_incentive or menu:propose_incentive button."""
     db = context.bot_data["db"]
     user = update.effective_user
     chat = update.effective_chat
     member = db.get_member(user.id)
 
+    is_callback = update.callback_query is not None
+    if is_callback:
+        await update.callback_query.answer()
+
+    async def reply(text):
+        if is_callback:
+            await update.callback_query.edit_message_text(text)
+        else:
+            await update.message.reply_text(text)
+
     if not member:
-        await update.message.reply_text(messages.not_registered())
+        await reply(messages.not_registered())
         return ConversationHandler.END
 
     config = context.bot_data['config']
@@ -37,24 +48,27 @@ async def propose_incentive_start(update: Update, context: CallbackContext) -> i
     elapsed = time.time() - last_time
     if elapsed < cooldown:
         remaining = int(cooldown - elapsed)
-        await update.message.reply_text(messages.propose_cooldown(remaining))
+        await reply(messages.propose_cooldown(remaining))
         return ConversationHandler.END
 
     context.user_data.clear()
     context.user_data["proposer_user_id"] = user.id
 
     if chat.type in ("group", "supergroup"):
-        await update.message.reply_text(messages.propose_redirecting_to_dm())
+        await reply(messages.propose_redirecting_to_dm())
         try:
             await context.bot.send_message(
                 chat_id=user.id,
                 text=messages.propose_incentive_ask_offered_by(),
             )
         except Exception:
-            await update.message.reply_text(messages.propose_dm_failed(context.bot.username))
+            await context.bot.send_message(
+                chat_id=chat.id,
+                text=messages.propose_dm_failed(context.bot.username),
+            )
             return ConversationHandler.END
     else:
-        await update.message.reply_text(messages.propose_incentive_ask_offered_by())
+        await reply(messages.propose_incentive_ask_offered_by())
 
     return OFFERED_BY
 
@@ -124,7 +138,7 @@ async def confirm_incentive_proposal(update: Update, context: CallbackContext) -
     proposer_name = f"@{user.username}" if user.username else user.full_name
 
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("Appoggia / Endorse", callback_data="endorse:0")]
+        [InlineKeyboardButton("Appoggia", callback_data="endorse:0")]
     ])
     placeholder = await context.bot.send_message(
         chat_id=group_chat_id,
@@ -150,7 +164,7 @@ async def confirm_incentive_proposal(update: Update, context: CallbackContext) -
     proposal = db.get_proposal(proposal_id)
 
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("Appoggia / Endorse", callback_data=f"endorse:{proposal_id}")]
+        [InlineKeyboardButton("Appoggia", callback_data=f"endorse:{proposal_id}")]
     ])
     await placeholder.edit_text(
         text=messages.propose_incentive_summary(proposal, proposer_name),
@@ -162,7 +176,7 @@ async def confirm_incentive_proposal(update: Update, context: CallbackContext) -
     except Exception:
         pass
 
-    await query.message.reply_text(messages.propose_sent_to_group())
+    await query.message.reply_text(messages.propose_sent_to_group(), reply_markup=back_keyboard())
     context.user_data.clear()
     return ConversationHandler.END
 
@@ -194,7 +208,10 @@ async def timeout_incentive(update: Update, context: CallbackContext) -> int:
 
 def build_incentive_conversation_handler(timeout_seconds: int) -> ConversationHandler:
     return ConversationHandler(
-        entry_points=[CommandHandler("propose_incentive", propose_incentive_start)],
+        entry_points=[
+            CommandHandler("propose_incentive", propose_incentive_start),
+            CallbackQueryHandler(propose_incentive_start, pattern=r"^menu:propose_incentive$"),
+        ],
         states={
             OFFERED_BY: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, receive_offered_by)

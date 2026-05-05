@@ -13,6 +13,7 @@ from telegram.ext import (
 )
 
 import messages
+from menu import back_keyboard
 from social_matrix import get_references, format_references
 
 logger = logging.getLogger(__name__)
@@ -22,14 +23,24 @@ EVENT_NAME, NUM_PARTICIPANTS, PAL_PER_PARTICIPANT, PAL_FOR_ORGANISER, CONFIRM = 
 
 
 async def propose_start(update: Update, context: CallbackContext) -> int:
-    """Entry point: /propose command. Check registration, redirect to DM if in group."""
+    """Entry point: /propose command or menu:propose button."""
     db = context.bot_data["db"]
     user = update.effective_user
     chat = update.effective_chat
     member = db.get_member(user.id)
 
+    is_callback = update.callback_query is not None
+    if is_callback:
+        await update.callback_query.answer()
+
+    async def reply(text):
+        if is_callback:
+            await update.callback_query.edit_message_text(text)
+        else:
+            await update.message.reply_text(text)
+
     if not member:
-        await update.message.reply_text(messages.not_registered())
+        await reply(messages.not_registered())
         return ConversationHandler.END
 
     config = context.bot_data['config']
@@ -39,21 +50,24 @@ async def propose_start(update: Update, context: CallbackContext) -> int:
     elapsed = time.time() - last_time
     if elapsed < cooldown:
         remaining = int(cooldown - elapsed)
-        await update.message.reply_text(messages.propose_cooldown(remaining))
+        await reply(messages.propose_cooldown(remaining))
         return ConversationHandler.END
 
     context.user_data.clear()
     context.user_data["proposer_user_id"] = user.id
 
     if chat.type in ("group", "supergroup"):
-        await update.message.reply_text(messages.propose_redirecting_to_dm())
+        await reply(messages.propose_redirecting_to_dm())
         try:
             await context.bot.send_message(chat_id=user.id, text=messages.propose_ask_event())
         except Exception:
-            await update.message.reply_text(messages.propose_dm_failed(context.bot.username))
+            await context.bot.send_message(
+                chat_id=chat.id,
+                text=messages.propose_dm_failed(context.bot.username),
+            )
             return ConversationHandler.END
     else:
-        await update.message.reply_text(messages.propose_ask_event())
+        await reply(messages.propose_ask_event())
 
     return EVENT_NAME
 
@@ -164,7 +178,7 @@ async def confirm_proposal(update: Update, context: CallbackContext) -> int:
     proposer_name = f"@{user.username}" if user.username else user.full_name
 
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("Appoggia / Endorse", callback_data="endorse:0")]
+        [InlineKeyboardButton("Appoggia", callback_data="endorse:0")]
     ])
     placeholder = await context.bot.send_message(
         chat_id=group_chat_id,
@@ -185,7 +199,7 @@ async def confirm_proposal(update: Update, context: CallbackContext) -> int:
     proposal = db.get_proposal(proposal_id)
 
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("Appoggia / Endorse", callback_data=f"endorse:{proposal_id}")]
+        [InlineKeyboardButton("Appoggia", callback_data=f"endorse:{proposal_id}")]
     ])
     await placeholder.edit_text(
         text=messages.propose_summary(proposal, proposer_name),
@@ -197,7 +211,7 @@ async def confirm_proposal(update: Update, context: CallbackContext) -> int:
     except Exception:
         pass
 
-    await query.message.reply_text(messages.propose_sent_to_group())
+    await query.message.reply_text(messages.propose_sent_to_group(), reply_markup=back_keyboard())
     context.user_data.clear()
     return ConversationHandler.END
 
@@ -232,7 +246,10 @@ async def timeout(update: Update, context: CallbackContext) -> int:
 def build_conversation_handler(timeout_seconds: int) -> ConversationHandler:
     """Build and return the ConversationHandler for /propose."""
     return ConversationHandler(
-        entry_points=[CommandHandler("propose", propose_start)],
+        entry_points=[
+            CommandHandler("propose", propose_start),
+            CallbackQueryHandler(propose_start, pattern=r"^menu:propose$"),
+        ],
         states={
             EVENT_NAME: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, receive_event_name)

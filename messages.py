@@ -381,3 +381,28 @@ def incentive_expired_msg(incentive_id: int) -> str:
 
 def incentive_not_found(incentive_id: int) -> str:
     return f"Incentivo #{incentive_id} non trovato."
+
+
+# --- Menu & Navigation ---
+
+def menu_welcome() -> str:
+    return (
+        "Benvenuto nel bot PAL della Rete Palanche di Genova!\n"
+        "Scegli un'azione dal menu:"
+    )
+
+
+def status_emoji(status: str) -> str:
+    return {
+        "awaiting_endorsement": "⏳",
+        "pending": "🔄",
+        "on_hold": "🔴",
+        "approved": "✅",
+        "rejected": "❌",
+        "failed": "⚠️",
+    }.get(status, "❓")
+
+
+def history_button_label(proposal) -> str:
+    emoji = status_emoji(proposal.status)
+    return f"{emoji} #{proposal.id} — {proposal.event_name[:35]}"

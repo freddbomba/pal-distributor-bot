@@ -273,6 +273,13 @@ class Database:
         ).fetchall()
         return [Proposal(**dict(r)) for r in rows]
 
+    def get_proposals_by_status(self, status: str) -> list[Proposal]:
+        rows = self.conn.execute(
+            "SELECT * FROM proposals WHERE status = ? ORDER BY created_at DESC",
+            (status,),
+        ).fetchall()
+        return [Proposal(**dict(r)) for r in rows]
+
     def update_proposal_message(self, proposal_id: int, message_id: int):
         self.conn.execute(
             "UPDATE proposals SET message_id = ? WHERE id = ?",

@@ -5,6 +5,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import CallbackContext
 
 import messages
+from menu import back_button, back_keyboard
 from utils import validate_ton_address, format_pal_amount
 
 logger = logging.getLogger(__name__)
@@ -117,7 +118,7 @@ async def _do_endorse(update, context, db, config, user, proposal_id, is_callbac
 
     # Edit original message to show endorsed status with Object button
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("Obietta / Object", callback_data=f"object:{proposal_id}")]
+        [InlineKeyboardButton("Obietta", callback_data=f"object:{proposal_id}")]
     ])
     try:
         await context.bot.edit_message_text(
@@ -264,7 +265,7 @@ async def reinstate_handler(update: Update, context: CallbackContext):
         endorser_name = f"@{endorser_member.telegram_username}" if endorser_member and endorser_member.telegram_username else f"User {proposal.endorser_user_id}"
 
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("Obietta / Object", callback_data=f"object:{proposal_id}")]
+        [InlineKeyboardButton("Obietta", callback_data=f"object:{proposal_id}")]
     ])
     try:
         await context.bot.edit_message_text(
@@ -276,7 +277,7 @@ async def reinstate_handler(update: Update, context: CallbackContext):
     except Exception as e:
         logger.warning(f"Could not edit message for proposal {proposal_id}: {e}")
 
-    await update.message.reply_text(messages.reinstated(proposal_id))
+    await update.message.reply_text(messages.reinstated(proposal_id), reply_markup=back_keyboard())
 
 
 # --- /reject (admin) ---
@@ -331,14 +332,17 @@ async def history_handler(update: Update, context: CallbackContext):
 
     proposals = db.get_recent_proposals(limit)
     if not proposals:
-        await update.message.reply_text(messages.no_proposals())
+        await update.message.reply_text(messages.no_proposals(), reply_markup=back_keyboard())
         return
 
-    lines = [messages.history_header(len(proposals))]
-    for p in proposals:
-        lines.append(messages.history_row(p))
-
-    await update.message.reply_text("\n".join(lines))
+    rows = [[InlineKeyboardButton(
+        messages.history_button_label(p), callback_data=f"status:{p.id}"
+    )] for p in proposals]
+    rows.append([back_button()])
+    await update.message.reply_text(
+        messages.history_header(len(proposals)),
+        reply_markup=InlineKeyboardMarkup(rows),
+    )
 
 
 # --- /myproposals ---
@@ -349,20 +353,24 @@ async def myproposals_handler(update: Update, context: CallbackContext):
 
     proposals = db.get_user_proposals(user.id)
     if not proposals:
-        await update.message.reply_text(messages.no_proposals())
+        await update.message.reply_text(messages.no_proposals(), reply_markup=back_keyboard())
         return
 
-    lines = [f"Le tue proposte:\n"]
-    for p in proposals:
-        lines.append(messages.history_row(p))
-
-    await update.message.reply_text("\n".join(lines))
+    rows = [[InlineKeyboardButton(
+        messages.history_button_label(p), callback_data=f"status:{p.id}"
+    )] for p in proposals]
+    rows.append([back_button()])
+    await update.message.reply_text(
+        "Le tue proposte:",
+        reply_markup=InlineKeyboardMarkup(rows),
+    )
 
 
 # --- /status ---
 
 async def status_handler(update: Update, context: CallbackContext):
     db = context.bot_data["db"]
+    config = context.bot_data["config"]
 
     if not context.args or len(context.args) != 1:
         await update.message.reply_text("Uso: /status <id_proposta>")
@@ -376,10 +384,40 @@ async def status_handler(update: Update, context: CallbackContext):
 
     proposal = db.get_proposal(proposal_id)
     if not proposal:
-        await update.message.reply_text(messages.proposal_not_found(proposal_id))
+        await update.message.reply_text(
+            messages.proposal_not_found(proposal_id), reply_markup=back_keyboard()
+        )
         return
 
-    await update.message.reply_text(messages.proposal_status(proposal))
+    user = update.effective_user
+    is_admin = _is_admin(user.id, config)
+
+    action_buttons = []
+    if proposal.status == "awaiting_endorsement" and user.id != proposal.proposer_user_id:
+        action_buttons.append(
+            InlineKeyboardButton("Appoggia", callback_data=f"endorse:{proposal_id}")
+        )
+    if proposal.status == "pending" and user.id != proposal.proposer_user_id:
+        action_buttons.append(
+            InlineKeyboardButton("Obietta", callback_data=f"object:{proposal_id}")
+        )
+    if proposal.status == "on_hold" and is_admin:
+        action_buttons.append(
+            InlineKeyboardButton("🔁 Ripristina", callback_data=f"reinstate:{proposal_id}")
+        )
+        action_buttons.append(
+            InlineKeyboardButton("❌ Rifiuta", callback_data=f"reject:{proposal_id}")
+        )
+
+    rows = []
+    if action_buttons:
+        rows.append(action_buttons)
+    rows.append([back_button()])
+
+    await update.message.reply_text(
+        messages.proposal_status(proposal),
+        reply_markup=InlineKeyboardMarkup(rows),
+    )
 
 
 # --- /balance ---
@@ -414,12 +452,6 @@ async def matrix_handler(update: Update, context: CallbackContext):
         lines.append(messages.matrix_row(ref))
 
     await update.message.reply_text("\n".join(lines))
-
-
-# --- /help ---
-
-async def help_handler(update: Update, context: CallbackContext):
-    await update.message.reply_text(messages.help_text())
 
 
 # --- /incentives ---
@@ -458,6 +490,142 @@ async def expire_incentive_handler(update: Update, context: CallbackContext):
 
     success = db.expire_incentive(incentive_id)
     if success:
-        await update.message.reply_text(messages.incentive_expired_msg(incentive_id))
+        await update.message.reply_text(
+            messages.incentive_expired_msg(incentive_id), reply_markup=back_keyboard()
+        )
     else:
-        await update.message.reply_text(f"Incentivo #{incentive_id} non e' attivo.")
+        await update.message.reply_text(
+            f"Incentivo #{incentive_id} non e' attivo.", reply_markup=back_keyboard()
+        )
+
+
+# --- Inline callback handlers for admin actions ---
+
+async def reinstate_callback_handler(update: Update, context: CallbackContext):
+    """Handle reinstate:<id> callback from status view."""
+    query = update.callback_query
+    await query.answer()
+
+    db = context.bot_data["db"]
+    config = context.bot_data["config"]
+    user = query.from_user
+
+    if not _is_admin(user.id, config):
+        await query.edit_message_text(messages.admin_only(), reply_markup=back_keyboard())
+        return
+
+    proposal_id = int(query.data.split(":")[1])
+    proposal = db.get_proposal(proposal_id)
+    if not proposal:
+        await query.edit_message_text(
+            messages.proposal_not_found(proposal_id), reply_markup=back_keyboard()
+        )
+        return
+    if proposal.status != "on_hold":
+        await query.edit_message_text(
+            messages.wrong_status(proposal_id, "on_hold", proposal.status),
+            reply_markup=back_keyboard(),
+        )
+        return
+
+    success = db.reinstate_proposal(proposal_id, config["proposal_expiry_hours"])
+    if not success:
+        await query.edit_message_text("Errore nel ripristino.", reply_markup=back_keyboard())
+        return
+
+    proposal = db.get_proposal(proposal_id)
+    proposer_member = db.get_member(proposal.proposer_user_id)
+    proposer_name = (
+        f"@{proposer_member.telegram_username}"
+        if proposer_member and proposer_member.telegram_username
+        else f"User {proposal.proposer_user_id}"
+    )
+    endorser_name = ""
+    if proposal.endorser_user_id:
+        endorser_member = db.get_member(proposal.endorser_user_id)
+        endorser_name = (
+            f"@{endorser_member.telegram_username}"
+            if endorser_member and endorser_member.telegram_username
+            else f"User {proposal.endorser_user_id}"
+        )
+
+    obj_keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("Obietta", callback_data=f"object:{proposal_id}")]
+    ])
+    try:
+        await context.bot.edit_message_text(
+            chat_id=proposal.chat_id,
+            message_id=proposal.message_id,
+            text=messages.proposal_endorsed_update(proposal, proposer_name, endorser_name),
+            reply_markup=obj_keyboard,
+        )
+    except Exception as e:
+        logger.warning(f"Could not edit group message for proposal {proposal_id}: {e}")
+
+    await query.edit_message_text(messages.reinstated(proposal_id), reply_markup=back_keyboard())
+
+
+async def reject_callback_handler(update: Update, context: CallbackContext):
+    """Handle reject:<id> callback from status view."""
+    query = update.callback_query
+    await query.answer()
+
+    db = context.bot_data["db"]
+    config = context.bot_data["config"]
+    user = query.from_user
+
+    if not _is_admin(user.id, config):
+        await query.edit_message_text(messages.admin_only(), reply_markup=back_keyboard())
+        return
+
+    proposal_id = int(query.data.split(":")[1])
+    proposal = db.get_proposal(proposal_id)
+    if not proposal:
+        await query.edit_message_text(
+            messages.proposal_not_found(proposal_id), reply_markup=back_keyboard()
+        )
+        return
+    if proposal.status != "on_hold":
+        await query.edit_message_text(
+            messages.wrong_status(proposal_id, "on_hold", proposal.status),
+            reply_markup=back_keyboard(),
+        )
+        return
+
+    success = db.reject_proposal(proposal_id)
+    if success:
+        await query.edit_message_text(messages.rejected(proposal_id), reply_markup=back_keyboard())
+    else:
+        await query.edit_message_text("Errore nel rifiuto.", reply_markup=back_keyboard())
+
+
+async def expire_incentive_callback_handler(update: Update, context: CallbackContext):
+    """Handle expire_incentive:<id> callback from menu."""
+    query = update.callback_query
+    await query.answer()
+
+    db = context.bot_data["db"]
+    config = context.bot_data["config"]
+    user = query.from_user
+
+    if not _is_admin(user.id, config):
+        await query.edit_message_text(messages.admin_only(), reply_markup=back_keyboard())
+        return
+
+    incentive_id = int(query.data.split(":")[1])
+    incentive = db.get_incentive(incentive_id)
+    if not incentive:
+        await query.edit_message_text(
+            messages.incentive_not_found(incentive_id), reply_markup=back_keyboard()
+        )
+        return
+
+    success = db.expire_incentive(incentive_id)
+    if success:
+        await query.edit_message_text(
+            messages.incentive_expired_msg(incentive_id), reply_markup=back_keyboard()
+        )
+    else:
+        await query.edit_message_text(
+            f"Incentivo #{incentive_id} non e' attivo.", reply_markup=back_keyboard()
+        )

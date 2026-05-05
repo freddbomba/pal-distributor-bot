@@ -516,6 +516,76 @@ def test_dm_flow():
         check("incentive proposal chat_id is group", ip.chat_id == group_chat_id)
 
 
+def test_menu():
+    print("\n=== Menu & Navigation ===")
+    from menu import build_main_menu, back_button, back_keyboard
+
+    kb_user = build_main_menu(is_admin=False)
+    check("user menu has 4 rows", len(kb_user.inline_keyboard) == 4)
+
+    kb_admin = build_main_menu(is_admin=True)
+    check("admin menu has 5 rows", len(kb_admin.inline_keyboard) == 5)
+
+    admin_row = kb_admin.inline_keyboard[4]
+    admin_labels = [btn.text for btn in admin_row]
+    check("admin row has Ripristina", any("Ripristina" in l for l in admin_labels))
+    check("admin row has Rifiuta", any("Rifiuta" in l for l in admin_labels))
+    check("admin row has expire_incentive", any("Scade" in l for l in admin_labels))
+
+    bk = back_keyboard()
+    check("back_keyboard has one row", len(bk.inline_keyboard) == 1)
+    check("back button data is menu:main", bk.inline_keyboard[0][0].callback_data == "menu:main")
+
+    check("menu_welcome non-empty", len(messages.menu_welcome()) > 0)
+    check("status_emoji approved", messages.status_emoji("approved") == "✅")
+    check("status_emoji pending", messages.status_emoji("pending") == "🔄")
+    check("status_emoji on_hold", messages.status_emoji("on_hold") == "🔴")
+    check("status_emoji unknown", messages.status_emoji("unknown") == "❓")
+
+    p = Proposal(
+        id=42, proposer_user_id=1, event_name="Sagra del Pesto",
+        num_participants=5, pal_per_participant=10.0, pal_for_organiser=20.0,
+        total_amount=70.0, status="awaiting_endorsement", created_at="2025-01-01",
+    )
+    label = messages.history_button_label(p)
+    check("history_button_label has id", "42" in label)
+    check("history_button_label has event name", "Sagra del Pesto" in label)
+    check("history_button_label has emoji", "⏳" in label)
+
+    # ConversationHandlers accept menu:propose / menu:propose_incentive as entry points
+    from conversation import build_conversation_handler
+    from conversation_incentive import build_incentive_conversation_handler
+    pal_handler = build_conversation_handler(300)
+    entry_patterns = [
+        h.pattern.pattern if hasattr(h, "pattern") else None
+        for h in pal_handler.entry_points
+    ]
+    check("PAL handler has menu:propose entry", any(
+        p is not None and "menu:propose" in p for p in entry_patterns
+    ))
+    inc_handler = build_incentive_conversation_handler(300)
+    inc_patterns = [
+        h.pattern.pattern if hasattr(h, "pattern") else None
+        for h in inc_handler.entry_points
+    ]
+    check("incentive handler has menu:propose_incentive entry", any(
+        p is not None and "menu:propose_incentive" in p for p in inc_patterns
+    ))
+
+    # get_proposals_by_status
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db_path = os.path.join(tmpdir, "test.db")
+        db = Database(db_path)
+        db.initialize()
+        db.upsert_member(1, "alice", "EQDtFpEwcFAEcRe5mLVh2N6C0x-_hJEM7W61_JLnSF74p4q2")
+        pid = db.create_proposal(1, "Test", 1, 1.0, 0.0, 1, -100)
+        awaiting = db.get_proposals_by_status("awaiting_endorsement")
+        check("get_proposals_by_status finds awaiting", len(awaiting) == 1)
+        check("get_proposals_by_status correct id", awaiting[0].id == pid)
+        on_hold = db.get_proposals_by_status("on_hold")
+        check("get_proposals_by_status empty for on_hold", len(on_hold) == 0)
+
+
 if __name__ == "__main__":
     test_config()
     test_utils()
@@ -526,6 +596,7 @@ if __name__ == "__main__":
     test_incentives()
     test_confirm_flow()
     test_dm_flow()
+    test_menu()
 
     print(f"\n{'=' * 50}")
     print(f"Results: {PASS} passed, {FAIL} failed")

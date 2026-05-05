@@ -27,10 +27,13 @@ from handlers import (
     balance_handler,
     status_handler,
     matrix_handler,
-    help_handler,
     incentives_handler,
     expire_incentive_handler,
+    reinstate_callback_handler,
+    reject_callback_handler,
+    expire_incentive_callback_handler,
 )
+from menu import help_handler, menu_callback_handler, status_callback_handler
 from scheduler import check_expired_proposals
 
 logging.basicConfig(
@@ -98,10 +101,16 @@ def main():
     app.add_handler(CommandHandler("expire_incentive", expire_incentive_handler))
     app.add_handler(CommandHandler("help", help_handler))
     app.add_handler(CommandHandler("start", help_handler))
+    app.add_handler(CommandHandler("menu", help_handler))
 
     # Register inline keyboard callbacks
     app.add_handler(CallbackQueryHandler(endorse_callback_handler, pattern=r"^endorse:\d+$"))
     app.add_handler(CallbackQueryHandler(object_callback_handler, pattern=r"^object:\d+$"))
+    app.add_handler(CallbackQueryHandler(reinstate_callback_handler, pattern=r"^reinstate:\d+$"))
+    app.add_handler(CallbackQueryHandler(reject_callback_handler, pattern=r"^reject:\d+$"))
+    app.add_handler(CallbackQueryHandler(expire_incentive_callback_handler, pattern=r"^expire_incentive:\d+$"))
+    app.add_handler(CallbackQueryHandler(status_callback_handler, pattern=r"^status:\d+$"))
+    app.add_handler(CallbackQueryHandler(menu_callback_handler, pattern=r"^menu:.*$"))
 
     # Start scheduler for auto-approval
     app.job_queue.run_repeating(
