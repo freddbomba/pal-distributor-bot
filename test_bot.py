@@ -394,6 +394,57 @@ def test_incentives():
         check("help has expire_incentive", "/expire_incentive" in messages.help_text())
 
 
+def test_confirm_flow():
+    print("\n=== Confirm / Abort Flow ===")
+
+    # propose_confirm_summary formatting
+    text = messages.propose_confirm_summary("Sagra del Pesto", 12, 2.5, 5.0, 35.0)
+    check("confirm summary has event", "Sagra del Pesto" in text)
+    check("confirm summary has participants", "12" in text)
+    check("confirm summary has total", "35" in text)
+    check("confirm summary has PAL per partecipante", "2.5" in text)
+    check("confirm summary has PAL organizzatore", "5" in text)
+    check("confirm summary asks Confermi", "Confermi" in text)
+
+    # incentive_confirm_summary formatting
+    itext = messages.incentive_confirm_summary(
+        "Bottega Verde", "10% sconto in PAL", "Minimo 5 PAL"
+    )
+    check("incentive confirm has offered_by", "Bottega Verde" in itext)
+    check("incentive confirm has description", "10% sconto" in itext)
+    check("incentive confirm has conditions", "Minimo 5 PAL" in itext)
+    check("incentive confirm asks Confermi", "Confermi" in itext)
+
+    # Abort path: no proposal created in DB
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db_path = os.path.join(tmpdir, "test.db")
+        db = Database(db_path)
+        db.initialize()
+        db.upsert_member(1, "alice", "EQDtFpEwcFAEcRe5mLVh2N6C0x-_hJEM7W61_JLnSF74p4q2")
+
+        # Simulate abort: no create_proposal called — DB should be empty
+        proposals_before = db.get_recent_proposals(10)
+        check("no proposals before confirm", len(proposals_before) == 0)
+
+        # Simulate confirm: create_proposal is called exactly once
+        pid = db.create_proposal(1, "Sagra del Pesto", 12, 2.5, 5.0, 999, -100)
+        proposals_after = db.get_recent_proposals(10)
+        check("one proposal after confirm", len(proposals_after) == 1)
+        check("proposal has correct event", proposals_after[0].event_name == "Sagra del Pesto")
+
+    # ConversationHandler states include CONFIRM
+    from conversation import build_conversation_handler, CONFIRM as PAL_CONFIRM
+    from conversation_incentive import build_incentive_conversation_handler, CONFIRM as INC_CONFIRM
+
+    pal_handler = build_conversation_handler(300)
+    check("PAL handler has CONFIRM state", PAL_CONFIRM in pal_handler.states)
+    check("PAL CONFIRM has two callbacks", len(pal_handler.states[PAL_CONFIRM]) == 2)
+
+    inc_handler = build_incentive_conversation_handler(300)
+    check("incentive handler has CONFIRM state", INC_CONFIRM in inc_handler.states)
+    check("incentive CONFIRM has two callbacks", len(inc_handler.states[INC_CONFIRM]) == 2)
+
+
 if __name__ == "__main__":
     test_config()
     test_utils()
@@ -402,6 +453,7 @@ if __name__ == "__main__":
     test_messages()
     test_expired_proposals()
     test_incentives()
+    test_confirm_flow()
 
     print(f"\n{'=' * 50}")
     print(f"Results: {PASS} passed, {FAIL} failed")

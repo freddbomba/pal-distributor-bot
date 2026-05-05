@@ -78,6 +78,34 @@ def propose_summary(proposal: Proposal, proposer_name: str):
     )
 
 
+def propose_confirm_summary(
+    event_name: str,
+    num_participants: int,
+    pal_per_participant: float,
+    pal_for_organiser: float,
+    total: float,
+) -> str:
+    return (
+        f"Riepilogo proposta:\n\n"
+        f"Evento: {event_name}\n"
+        f"Partecipanti: {num_participants}\n"
+        f"PAL per partecipante: {format_pal_amount(pal_per_participant)}\n"
+        f"PAL per organizzatore: {format_pal_amount(pal_for_organiser)}\n"
+        f"Totale: {format_pal_amount(total)} PAL\n\n"
+        f"Confermi la proposta?"
+    )
+
+
+def incentive_confirm_summary(offered_by: str, description: str, conditions: str) -> str:
+    return (
+        f"Riepilogo incentivo:\n\n"
+        f"Offerto da: {offered_by}\n"
+        f"Incentivo: {description}\n"
+        f"Condizioni: {conditions}\n\n"
+        f"Confermi la proposta?"
+    )
+
+
 def propose_amount_exceeds_max(max_amount: float):
     return f"Il totale supera il massimo consentito di {format_pal_amount(max_amount)} PAL. Riprova."
 

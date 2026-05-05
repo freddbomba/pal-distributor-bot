@@ -7,6 +7,7 @@ from telegram.ext import (
     ConversationHandler,
     CommandHandler,
     MessageHandler,
+    CallbackQueryHandler,
     CallbackContext,
     filters,
 )
@@ -17,7 +18,7 @@ from social_matrix import get_references, format_references
 logger = logging.getLogger(__name__)
 
 # Conversation states
-EVENT_NAME, NUM_PARTICIPANTS, PAL_PER_PARTICIPANT, PAL_FOR_ORGANISER = range(4)
+EVENT_NAME, NUM_PARTICIPANTS, PAL_PER_PARTICIPANT, PAL_FOR_ORGANISER, CONFIRM = range(5)
 
 
 async def propose_start(update: Update, context: CallbackContext) -> int:
@@ -40,8 +41,6 @@ async def propose_start(update: Update, context: CallbackContext) -> int:
         remaining = int(cooldown - elapsed)
         await update.message.reply_text(messages.propose_cooldown(remaining))
         return ConversationHandler.END
-
-    rate_limits[user.id] = time.time()
 
     # Clear any previous draft
     context.user_data.clear()
@@ -104,8 +103,7 @@ async def receive_pal_per_participant(update: Update, context: CallbackContext) 
 
 
 async def receive_pal_organiser(update: Update, context: CallbackContext) -> int:
-    """Receive organiser PAL, validate total, create proposal and post summary."""
-    db = context.bot_data["db"]
+    """Receive organiser PAL, validate total, show confirmation recap."""
     config = context.bot_data["config"]
 
     try:
@@ -121,38 +119,57 @@ async def receive_pal_organiser(update: Update, context: CallbackContext) -> int
     pal_pp = data["pal_per_participant"]
     total = (num_p * pal_pp) + organiser
 
-    # Check max amount
     if total > config["max_proposal_amount"]:
         await update.message.reply_text(
             messages.propose_amount_exceeds_max(config["max_proposal_amount"])
         )
         return PAL_FOR_ORGANISER
 
-    # Post summary first to get message_id
-    user = update.effective_user
+    context.user_data["pal_for_organiser"] = organiser
+    context.user_data["total"] = total
+
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Conferma", callback_data="propose_confirm"),
+        InlineKeyboardButton("❌ Annulla", callback_data="propose_abort"),
+    ]])
+    await update.message.reply_text(
+        messages.propose_confirm_summary(data["event_name"], num_p, pal_pp, organiser, total),
+        reply_markup=keyboard,
+    )
+    return CONFIRM
+
+
+async def confirm_proposal(update: Update, context: CallbackContext) -> int:
+    """User confirmed — create the proposal and post the public summary."""
+    query = update.callback_query
+    await query.answer()
+
+    db = context.bot_data["db"]
+    user = query.from_user
+    data = context.user_data
+
+    rate_limits = context.bot_data.setdefault('rate_limits', {})
+    rate_limits[user.id] = time.time()
+
     proposer_name = f"@{user.username}" if user.username else user.full_name
 
-    # Send a placeholder to get the message_id
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("Appoggia / Endorse", callback_data="endorse:0")]
     ])
-    placeholder = await update.message.reply_text("Creazione proposta...", reply_markup=keyboard)
+    placeholder = await query.message.reply_text("Creazione proposta...", reply_markup=keyboard)
 
-    # Create proposal in DB
     proposal_id = db.create_proposal(
         proposer_user_id=data["proposer_user_id"],
         event_name=data["event_name"],
-        num_participants=num_p,
-        pal_per_participant=pal_pp,
-        pal_for_organiser=organiser,
+        num_participants=data["num_participants"],
+        pal_per_participant=data["pal_per_participant"],
+        pal_for_organiser=data["pal_for_organiser"],
         message_id=placeholder.message_id,
-        chat_id=update.effective_chat.id,
+        chat_id=query.message.chat_id,
     )
 
-    # Get the created proposal
     proposal = db.get_proposal(proposal_id)
 
-    # Update the message with actual proposal content
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("Appoggia / Endorse", callback_data=f"endorse:{proposal_id}")]
     ])
@@ -161,7 +178,21 @@ async def receive_pal_organiser(update: Update, context: CallbackContext) -> int
         reply_markup=keyboard,
     )
 
+    try:
+        await query.edit_message_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+
     context.user_data.clear()
+    return ConversationHandler.END
+
+
+async def abort_proposal(update: Update, context: CallbackContext) -> int:
+    """User aborted — discard draft, no rate limit tick."""
+    query = update.callback_query
+    await query.answer()
+    context.user_data.clear()
+    await query.edit_message_text("Proposta annullata.")
     return ConversationHandler.END
 
 
@@ -199,6 +230,10 @@ def build_conversation_handler(timeout_seconds: int) -> ConversationHandler:
             ],
             PAL_FOR_ORGANISER: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, receive_pal_organiser)
+            ],
+            CONFIRM: [
+                CallbackQueryHandler(confirm_proposal, pattern=r"^propose_confirm$"),
+                CallbackQueryHandler(abort_proposal, pattern=r"^propose_abort$"),
             ],
             ConversationHandler.TIMEOUT: [
                 MessageHandler(filters.ALL, timeout)

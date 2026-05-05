@@ -7,6 +7,7 @@ from telegram.ext import (
     ConversationHandler,
     CommandHandler,
     MessageHandler,
+    CallbackQueryHandler,
     CallbackContext,
     filters,
 )
@@ -15,7 +16,7 @@ import messages
 
 logger = logging.getLogger(__name__)
 
-OFFERED_BY, INCENTIVE_DESC, CONDITIONS = range(3)
+OFFERED_BY, INCENTIVE_DESC, CONDITIONS, CONFIRM = range(4)
 
 
 async def propose_incentive_start(update: Update, context: CallbackContext) -> int:
@@ -67,7 +68,7 @@ async def receive_incentive_desc(update: Update, context: CallbackContext) -> in
 
 
 async def receive_conditions(update: Update, context: CallbackContext) -> int:
-    db = context.bot_data["db"]
+    """Receive conditions, show confirmation recap."""
     conditions = update.message.text.strip()
 
     if not conditions:
@@ -76,15 +77,40 @@ async def receive_conditions(update: Update, context: CallbackContext) -> int:
 
     context.user_data["incentive_conditions"] = conditions
     data = context.user_data
-    user = update.effective_user
+
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Conferma", callback_data="incentive_confirm"),
+        InlineKeyboardButton("❌ Annulla", callback_data="incentive_abort"),
+    ]])
+    await update.message.reply_text(
+        messages.incentive_confirm_summary(
+            data["incentive_offered_by"],
+            data["incentive_description"],
+            data["incentive_conditions"],
+        ),
+        reply_markup=keyboard,
+    )
+    return CONFIRM
+
+
+async def confirm_incentive_proposal(update: Update, context: CallbackContext) -> int:
+    """User confirmed — create the incentive proposal and post the public summary."""
+    query = update.callback_query
+    await query.answer()
+
+    db = context.bot_data["db"]
+    user = query.from_user
+    data = context.user_data
 
     rate_limits = context.bot_data.setdefault('rate_limits', {})
     rate_limits[user.id] = time.time()
 
+    proposer_name = f"@{user.username}" if user.username else user.full_name
+
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("Appoggia / Endorse", callback_data="endorse:0")]
     ])
-    placeholder = await update.message.reply_text("Creazione proposta incentivo...", reply_markup=keyboard)
+    placeholder = await query.message.reply_text("Creazione proposta incentivo...", reply_markup=keyboard)
 
     event_name = f"[Incentivo] {data['incentive_description'][:60]}"
     proposal_id = db.create_proposal(
@@ -94,7 +120,7 @@ async def receive_conditions(update: Update, context: CallbackContext) -> int:
         pal_per_participant=0.0,
         pal_for_organiser=0.0,
         message_id=placeholder.message_id,
-        chat_id=update.effective_chat.id,
+        chat_id=query.message.chat_id,
         proposal_type="incentive",
         incentive_offered_by=data["incentive_offered_by"],
         incentive_description=data["incentive_description"],
@@ -102,7 +128,6 @@ async def receive_conditions(update: Update, context: CallbackContext) -> int:
     )
 
     proposal = db.get_proposal(proposal_id)
-    proposer_name = f"@{user.username}" if user.username else user.full_name
 
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("Appoggia / Endorse", callback_data=f"endorse:{proposal_id}")]
@@ -112,7 +137,21 @@ async def receive_conditions(update: Update, context: CallbackContext) -> int:
         reply_markup=keyboard,
     )
 
+    try:
+        await query.edit_message_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+
     context.user_data.clear()
+    return ConversationHandler.END
+
+
+async def abort_incentive_proposal(update: Update, context: CallbackContext) -> int:
+    """User aborted — discard draft, no rate limit tick."""
+    query = update.callback_query
+    await query.answer()
+    context.user_data.clear()
+    await query.edit_message_text("Proposta incentivo annullata.")
     return ConversationHandler.END
 
 
@@ -144,6 +183,10 @@ def build_incentive_conversation_handler(timeout_seconds: int) -> ConversationHa
             ],
             CONDITIONS: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, receive_conditions)
+            ],
+            CONFIRM: [
+                CallbackQueryHandler(confirm_incentive_proposal, pattern=r"^incentive_confirm$"),
+                CallbackQueryHandler(abort_incentive_proposal, pattern=r"^incentive_abort$"),
             ],
             ConversationHandler.TIMEOUT: [
                 MessageHandler(filters.ALL, timeout_incentive)
