@@ -172,19 +172,28 @@ async def confirm_proposal(update: Update, context: CallbackContext) -> int:
     data = context.user_data
     group_chat_id = config["telegram_group_chat_id"]
 
-    rate_limits = context.bot_data.setdefault('rate_limits', {})
-    rate_limits[user.id] = time.time()
-
     proposer_name = f"@{user.username}" if user.username else user.full_name
 
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("Appoggia", callback_data="endorse:0")]
-    ])
-    placeholder = await context.bot.send_message(
-        chat_id=group_chat_id,
-        text="Creazione proposta...",
-        reply_markup=keyboard,
-    )
+    try:
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("Appoggia", callback_data="endorse:0")]
+        ])
+        placeholder = await context.bot.send_message(
+            chat_id=group_chat_id,
+            text="Creazione proposta...",
+            reply_markup=keyboard,
+        )
+    except Exception as e:
+        logger.error("Failed to post proposal to group %s: %s", group_chat_id, e)
+        await query.edit_message_text(
+            f"Errore: non riesco a pubblicare nel gruppo. "
+            f"Verifica che il bot sia membro del gruppo e abbia i permessi per inviare messaggi."
+        )
+        context.user_data.clear()
+        return ConversationHandler.END
+
+    rate_limits = context.bot_data.setdefault('rate_limits', {})
+    rate_limits[user.id] = time.time()
 
     proposal_id = db.create_proposal(
         proposer_user_id=data["proposer_user_id"],

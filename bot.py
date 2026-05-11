@@ -43,6 +43,11 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+async def error_handler(update, context):
+    """Log unhandled exceptions so they don't disappear silently."""
+    logger.error("Unhandled exception while processing update %s:", update, exc_info=context.error)
+
+
 def main():
     config = load_config()
 
@@ -111,6 +116,9 @@ def main():
     app.add_handler(CallbackQueryHandler(expire_incentive_callback_handler, pattern=r"^expire_incentive:\d+$"))
     app.add_handler(CallbackQueryHandler(status_callback_handler, pattern=r"^status:\d+$"))
     app.add_handler(CallbackQueryHandler(menu_callback_handler, pattern=r"^menu:.*$"))
+
+    # Register error handler (catch-all for unhandled exceptions)
+    app.add_error_handler(error_handler)
 
     # Start scheduler for auto-approval
     app.job_queue.run_repeating(
