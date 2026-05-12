@@ -1,4 +1,6 @@
 python-telegram-bot[job-queue]>=20.0
 tonsdk>=1.0.0
+pytoniq-core>=0.1.45
+pytoniq>=0.1.43
 aiohttp>=3.9.0
 python-dotenv>=1.0.0

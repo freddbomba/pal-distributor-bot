@@ -28,8 +28,21 @@ class JettonTransfer:
 
     def _get_wallet(self):
         if self._wallet is None:
-            _mnemonics, _pub_k, _priv_k, self._wallet = Wallets.from_mnemonics(
-                self.treasury_mnemonic, WalletVersionEnum.v4r2, 0
+            import hashlib
+            from tonsdk.crypto._mnemonic import crypto_sign_seed_keypair
+            # tonsdk mnemonic_to_entropy uses HMAC instead of PBKDF2, incompatible
+            # with Tonkeeper. Official TON algorithm: PBKDF2 directly on mnemonic string.
+            mnemonic_str = " ".join(self.treasury_mnemonic)
+            seed = hashlib.pbkdf2_hmac(
+                "sha512",
+                mnemonic_str.encode("utf-8"),
+                b"TON default seed",
+                100000,
+                64,
+            )
+            pub_k, priv_k = crypto_sign_seed_keypair(seed[:32])
+            self._wallet = Wallets.ALL[WalletVersionEnum.v4r2](
+                public_key=pub_k, private_key=priv_k, wc=0
             )
         return self._wallet
 
