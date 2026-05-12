@@ -1,13 +1,13 @@
 """TON Jetton transfer logic for PAL token distribution."""
 
+import base64
 import logging
-import struct
+import time
 from typing import Optional
 
 import aiohttp
-from tonsdk.contract.wallet import Wallets, WalletVersionEnum
 from tonsdk.boc import Cell, begin_cell
-from tonsdk.utils import to_nano, bytes_to_b64str, Address
+from tonsdk.utils import bytes_to_b64str, Address
 
 logger = logging.getLogger(__name__)
 
@@ -23,28 +23,17 @@ class JettonTransfer:
         self.ton_api_url = config["ton_api_url"].rstrip("/")
         self.ton_api_key = config["ton_api_key"]
         self.pal_decimals = config["pal_decimals"]
+        self._priv_k = None
+        self._wallet_id = None
 
-        self._wallet = None  # initialized lazily in _get_wallet()
-
-    def _get_wallet(self):
-        if self._wallet is None:
-            import hashlib
-            from tonsdk.crypto._mnemonic import crypto_sign_seed_keypair
-            # tonsdk mnemonic_to_entropy uses HMAC instead of PBKDF2, incompatible
-            # with Tonkeeper. Official TON algorithm: PBKDF2 directly on mnemonic string.
-            mnemonic_str = " ".join(self.treasury_mnemonic)
-            seed = hashlib.pbkdf2_hmac(
-                "sha512",
-                mnemonic_str.encode("utf-8"),
-                b"TON default seed",
-                100000,
-                64,
-            )
-            pub_k, priv_k = crypto_sign_seed_keypair(seed[:32])
-            self._wallet = Wallets.ALL[WalletVersionEnum.v4r2](
-                public_key=pub_k, private_key=priv_k, wc=0
-            )
-        return self._wallet
+    def _get_signing_params(self):
+        """Lazily derive W5R1 private key and wallet_id from mnemonic."""
+        if self._priv_k is None:
+            from pytoniq_core.crypto.keys import mnemonic_to_wallet_key
+            from pytoniq.contract.wallets.wallet_v5 import WalletV5WalletID
+            _, self._priv_k = mnemonic_to_wallet_key(self.treasury_mnemonic)
+            self._wallet_id = WalletV5WalletID(network_global_id=-239, workchain=0).pack()
+        return self._priv_k, self._wallet_id
 
     def _headers(self) -> dict:
         headers = {"Content-Type": "application/json"}
@@ -79,29 +68,23 @@ class JettonTransfer:
                 ["tvm.Slice", self._address_to_slice_b64(owner_address)]
             ],
         })
-        # Result stack contains the Jetton wallet address as a cell/slice
         stack = result.get("stack", [])
         if stack and len(stack) > 0:
-            # Parse address from the returned cell
             addr_cell_b64 = stack[0][1].get("bytes", "") if isinstance(stack[0][1], dict) else stack[0][1]
             return self._parse_address_from_cell(addr_cell_b64)
         raise RuntimeError("Could not determine Jetton wallet address")
 
     def _address_to_slice_b64(self, address: str) -> str:
-        """Convert a TON address to a base64-encoded cell for API calls."""
         addr = Address(address)
         cell = begin_cell().store_address(addr).end_cell()
         return bytes_to_b64str(cell.to_boc())
 
     def _parse_address_from_cell(self, cell_b64: str) -> str:
-        """Parse a TON address from a base64-encoded cell returned by API."""
-        import base64
         boc_bytes = base64.b64decode(cell_b64)
         cell = Cell.one_from_boc(boc_bytes)
-        # Read address from cell slice
         cs = cell.begin_parse()
         addr = cs.read_msg_addr()
-        return addr.to_string(True, True, True)  # user-friendly, bounceable
+        return addr.to_string(True, True, True)
 
     def _build_jetton_transfer_body(
         self,
@@ -109,25 +92,22 @@ class JettonTransfer:
         amount_raw: int,
         response_address: str,
         query_id: int = 0,
-        forward_ton_amount: int = 1,  # minimal forward for notification
+        forward_ton_amount: int = 1,
     ) -> Cell:
-        """Build the internal message body for a Jetton transfer."""
         dest_addr = Address(to_address)
         resp_addr = Address(response_address)
-
-        body = (
+        return (
             begin_cell()
-            .store_uint(JETTON_TRANSFER_OP, 32)  # op
-            .store_uint(query_id, 64)             # query_id
-            .store_coins(amount_raw)              # amount of Jettons
-            .store_address(dest_addr)             # destination
-            .store_address(resp_addr)             # response_destination
-            .store_bit(0)                         # custom_payload (null)
-            .store_coins(forward_ton_amount)      # forward_ton_amount
-            .store_bit(0)                         # forward_payload (null)
+            .store_uint(JETTON_TRANSFER_OP, 32)
+            .store_uint(query_id, 64)
+            .store_coins(amount_raw)
+            .store_address(dest_addr)
+            .store_address(resp_addr)
+            .store_bit(0)
+            .store_coins(forward_ton_amount)
+            .store_bit(0)
             .end_cell()
         )
-        return body
 
     async def get_seqno(self) -> int:
         """Get current sequence number for the treasury wallet."""
@@ -142,48 +122,58 @@ class JettonTransfer:
         return 0
 
     async def send_pal_tokens(self, to_address: str, amount: float) -> str:
-        """Execute a PAL Jetton transfer from treasury to recipient.
+        """Execute a PAL Jetton transfer from treasury to recipient."""
+        from pytoniq.contract.wallets.wallet_v5 import WalletV5R1, sign_message
+        from pytoniq_core import Address as PyAddr, ExternalMsgInfo, MessageAny, Builder as PBuilder, Cell as PCell
 
-        Args:
-            to_address: Recipient's TON wallet address
-            amount: Amount of PAL tokens to send
+        priv_k, wallet_id = self._get_signing_params()
 
-        Returns:
-            A message hash string on success
-
-        Raises:
-            RuntimeError on failure
-        """
-        # Convert amount to raw (smallest unit)
         amount_raw = int(amount * (10 ** self.pal_decimals))
 
-        # Get treasury's Jetton wallet address
         jetton_wallet_addr = await self.get_jetton_wallet_address(self.treasury_address)
         logger.info(f"Treasury Jetton wallet: {jetton_wallet_addr}")
 
-        # Build Jetton transfer body
-        body = self._build_jetton_transfer_body(
+        # Build Jetton body with tonsdk, convert to pytoniq Cell via BOC
+        body_tonsdk = self._build_jetton_transfer_body(
             to_address=to_address,
             amount_raw=amount_raw,
             response_address=self.treasury_address,
         )
+        body_pytoniq = PCell.one_from_boc(body_tonsdk.to_boc(False))
 
-        # Get current seqno
         seqno = await self.get_seqno()
 
-        # Build external message: treasury wallet sends internal msg to its Jetton wallet
-        # Attach enough TON for gas (~0.05 TON)
-        query = self._get_wallet().create_transfer_message(
-            to_addr=jetton_wallet_addr,
-            amount=to_nano(0.05, "ton"),
-            seqno=seqno,
-            payload=body,
+        # Build W5R1 internal message (treasury → its Jetton wallet)
+        internal_msg = WalletV5R1.create_wallet_internal_message(
+            destination=PyAddr(jetton_wallet_addr),
+            send_mode=3,
+            value=int(0.05 * 1e9),  # 0.05 TON for gas
+            body=body_pytoniq,
         )
 
-        # Serialize and send
-        boc = bytes_to_b64str(query["message"].to_boc(False))
-        result = await self._api_post("sendBoc", {"boc": boc})
+        # Build W5R1 signed message body
+        signing_msg = PBuilder().store_uint(0x7369676e, 32)  # signed external op
+        signing_msg.store_uint(wallet_id, 32)
+        if seqno == 0:
+            signing_msg.store_uint(2**32 - 1, 32)
+        else:
+            signing_msg.store_uint(int(time.time()) + 60, 32)  # valid_until
+        signing_msg.store_uint(seqno, 32)
+        signing_msg.store_cell(WalletV5R1.pack_actions([internal_msg]))
+        signing_msg_cell = signing_msg.end_cell()
 
+        signature = sign_message(signing_msg_cell.hash, priv_k)
+        body_cell = PBuilder().store_cell(signing_msg_cell).store_bytes(signature).end_cell()
+
+        # Wrap in external message and serialize to BOC
+        ext_msg = MessageAny(
+            info=ExternalMsgInfo(src=None, dest=PyAddr(self.treasury_address), import_fee=0),
+            init=None,
+            body=body_cell,
+        )
+        boc_b64 = base64.b64encode(ext_msg.serialize().to_boc()).decode()
+
+        result = await self._api_post("sendBoc", {"boc": boc_b64})
         msg_hash = result.get("hash", result.get("message_hash", "unknown"))
         logger.info(f"Jetton transfer sent: {msg_hash}")
         return msg_hash
