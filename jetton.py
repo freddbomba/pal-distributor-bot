@@ -24,10 +24,14 @@ class JettonTransfer:
         self.ton_api_key = config["ton_api_key"]
         self.pal_decimals = config["pal_decimals"]
 
-        # Derive treasury wallet
-        _mnemonics, _pub_k, _priv_k, self.wallet = Wallets.from_mnemonics(
-            self.treasury_mnemonic, WalletVersionEnum.v4r2, 0
-        )
+        self._wallet = None  # initialized lazily in _get_wallet()
+
+    def _get_wallet(self):
+        if self._wallet is None:
+            _mnemonics, _pub_k, _priv_k, self._wallet = Wallets.from_mnemonics(
+                self.treasury_mnemonic, WalletVersionEnum.v4r2, 0
+            )
+        return self._wallet
 
     def _headers(self) -> dict:
         headers = {"Content-Type": "application/json"}
@@ -156,7 +160,7 @@ class JettonTransfer:
 
         # Build external message: treasury wallet sends internal msg to its Jetton wallet
         # Attach enough TON for gas (~0.05 TON)
-        query = self.wallet.create_transfer_message(
+        query = self._get_wallet().create_transfer_message(
             to_addr=jetton_wallet_addr,
             amount=to_nano(0.05, "ton"),
             seqno=seqno,
