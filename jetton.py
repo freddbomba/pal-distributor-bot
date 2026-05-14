@@ -139,7 +139,7 @@ class JettonTransfer:
             amount_raw=amount_raw,
             response_address=self.treasury_address,
         )
-        body_pytoniq = PCell.one_from_boc(body_tonsdk.to_boc(False))
+        body_pytoniq = PCell.one_from_boc(bytes(body_tonsdk.to_boc(False)))
 
         seqno = await self.get_seqno()
 
