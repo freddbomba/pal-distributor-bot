@@ -157,13 +157,14 @@ class JettonTransfer:
         if seqno == 0:
             signing_msg.store_uint(2**32 - 1, 32)
         else:
-            signing_msg.store_uint(int(time.time()) + 60, 32)  # valid_until
+            signing_msg.store_uint(int(time.time()) + 120, 32)  # valid_until
         signing_msg.store_uint(seqno, 32)
         signing_msg.store_cell(WalletV5R1.pack_actions([internal_msg]))
         signing_msg_cell = signing_msg.end_cell()
 
         signature = sign_message(signing_msg_cell.hash, priv_k)
-        body_cell = PBuilder().store_cell(signing_msg_cell).store_bytes(signature).end_cell()
+        # W5R1: signature (512 bits) must come first, then the signed body
+        body_cell = PBuilder().store_bytes(signature).store_cell(signing_msg_cell).end_cell()
 
         # Wrap in external message and serialize to BOC
         ext_msg = MessageAny(
