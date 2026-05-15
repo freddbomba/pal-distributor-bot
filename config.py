@@ -23,9 +23,9 @@ def load_config() -> dict:
         "treasury_address": os.getenv("TREASURY_ADDRESS", ""),
         # PAL Jetton
         "jetton_master_address": os.getenv("JETTON_MASTER_ADDRESS", ""),
-        "pal_decimals": int(os.getenv("PAL_DECIMALS", "9")),
+        "pal_decimals": int(os.getenv("PAL_DECIMALS", "2")),
         # Proposal settings
-        "proposal_expiry_hours": float(os.getenv("PROPOSAL_EXPIRY_HOURS", "24")),
+        "proposal_expiry_hours": float(os.getenv("PROPOSAL_EXPIRY_HOURS", "1")),
         "endorsement_expiry_hours": float(os.getenv("ENDORSEMENT_EXPIRY_HOURS", "48")),
         "max_proposal_amount": float(os.getenv("MAX_PROPOSAL_AMOUNT", "1000")),
         "propose_cooldown_seconds": int(os.getenv("PROPOSE_COOLDOWN_SECONDS", "300")),
