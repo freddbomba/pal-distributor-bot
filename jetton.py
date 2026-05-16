@@ -23,15 +23,16 @@ class JettonTransfer:
         self.ton_api_url = config["ton_api_url"].rstrip("/")
         self.ton_api_key = config["ton_api_key"]
         self.pal_decimals = config["pal_decimals"]
+        self._pub_k = None
         self._priv_k = None
         self._wallet_id = None
 
     def _get_signing_params(self):
-        """Lazily derive W5R1 private key and wallet_id from mnemonic."""
+        """Lazily derive W5R1 key pair and wallet_id from mnemonic."""
         if self._priv_k is None:
             from pytoniq_core.crypto.keys import mnemonic_to_wallet_key
             from pytoniq.contract.wallets.wallet_v5 import WalletV5WalletID
-            _, self._priv_k = mnemonic_to_wallet_key(self.treasury_mnemonic)
+            self._pub_k, self._priv_k = mnemonic_to_wallet_key(self.treasury_mnemonic)
             self._wallet_id = WalletV5WalletID(network_global_id=-239, workchain=0).pack()
         return self._priv_k, self._wallet_id
 
@@ -123,8 +124,9 @@ class JettonTransfer:
 
     async def send_pal_tokens(self, to_address: str, amount: float) -> str:
         """Execute a PAL Jetton transfer from treasury to recipient."""
-        from pytoniq.contract.wallets.wallet_v5 import WalletV5R1, sign_message
+        from pytoniq.contract.wallets.wallet_v5 import WalletV5R1, sign_message, WALLET_V5_R1_CODE
         from pytoniq_core import Address as PyAddr, ExternalMsgInfo, MessageAny, Builder as PBuilder, Cell as PCell
+        from pytoniq_core.tlb.account import StateInit
 
         priv_k, wallet_id = self._get_signing_params()
 
@@ -167,9 +169,22 @@ class JettonTransfer:
         body_cell = PBuilder().store_bytes(signature).store_cell(signing_msg_cell).end_cell()
 
         # Wrap in external message and serialize to BOC
+        # When seqno == 0 the wallet contract hasn't been deployed yet.
+        # We must include a StateInit (code + data) so the blockchain
+        # deploys the W5R1 smart contract on the first outgoing message.
+        if seqno == 0:
+            data_cell = WalletV5R1.create_data_cell(
+                public_key=self._pub_k,
+                wallet_id=wallet_id,
+            )
+            state_init = StateInit(code=WALLET_V5_R1_CODE, data=data_cell)
+            logger.info("First transaction — including StateInit to deploy wallet")
+        else:
+            state_init = None
+
         ext_msg = MessageAny(
             info=ExternalMsgInfo(src=None, dest=PyAddr(self.treasury_address), import_fee=0),
-            init=None,
+            init=state_init,
             body=body_cell,
         )
         boc_b64 = base64.b64encode(ext_msg.serialize().to_boc()).decode()
