@@ -111,12 +111,20 @@ class JettonTransfer:
         )
 
     async def get_seqno(self) -> int:
-        """Get current sequence number for the treasury wallet."""
+        """Get current sequence number for the treasury wallet.
+        
+        If the wallet is not yet deployed (exit_code -13), returns 0
+        so that send_pal_tokens will include a StateInit to deploy it.
+        """
         result = await self._api_post("runGetMethod", {
             "address": self.treasury_address,
             "method": "seqno",
             "stack": [],
         })
+        exit_code = result.get("exit_code", 0)
+        if exit_code != 0:
+            logger.warning(f"seqno call returned exit_code={exit_code} — wallet likely uninitialized")
+            return 0
         stack = result.get("stack", [])
         if stack:
             return int(stack[0][1], 16) if isinstance(stack[0][1], str) else int(stack[0][1])
