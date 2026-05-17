@@ -586,6 +586,91 @@ def test_menu():
         check("get_proposals_by_status empty for on_hold", len(on_hold) == 0)
 
 
+def test_jetton():
+    print("\n=== Jetton Transfer ===")
+    import asyncio
+    import base64
+    from pytoniq_core.boc import Builder, Cell
+    from pytoniq_core.boc.address import Address
+    from pytoniq_core.crypto.keys import mnemonic_new, mnemonic_to_wallet_key
+    from pytoniq_core.crypto.signature import sign_message
+    from jetton import JettonTransfer, JETTON_TRANSFER_OP
+
+    test_addr = "EQDtFpEwcFAEcRe5mLVh2N6C0x-_hJEM7W61_JLnSF74p4q2"
+    config = {
+        "jetton_master_address": "EQD0XmxQk5KxrKzz6HFrPZFHWcf_BQH-vuUM0o4ULvjTfOcy",
+        "treasury_mnemonic": " ".join(mnemonic_new(24)),
+        "treasury_address": test_addr,
+        "ton_api_url": "https://toncenter.com/api/v2",
+        "ton_api_key": "",
+        "pal_decimals": 2,
+    }
+    jt = JettonTransfer(config)
+
+    # Address helpers round-trip
+    slice_b64 = jt._address_to_slice_b64(test_addr)
+    check("_address_to_slice_b64 returns base64 string", isinstance(slice_b64, str) and len(slice_b64) > 0)
+    recovered = jt._parse_address_from_cell(slice_b64)
+    check("address round-trips correctly", recovered == test_addr)
+
+    # Jetton body opcode
+    body = jt._build_jetton_transfer_body(test_addr, 500, test_addr)
+    opcode = body.begin_parse().load_uint(32)
+    check("jetton body has correct opcode", opcode == JETTON_TRANSFER_OP)
+
+    # Regression: body_cell must start with signing_msg (opcode 0x7369676e), NOT with signature.
+    # The previous bug had signature first, which caused exitcode=0/steps=0 rejection on-chain.
+    _, priv_k = mnemonic_to_wallet_key(mnemonic_new(24))
+    signing_msg = Builder().store_uint(0x7369676e, 32).store_uint(0, 96).end_cell()
+    signature = sign_message(signing_msg.hash, priv_k)
+    body_cell = Builder().store_cell(signing_msg).store_bytes(signature).end_cell()
+    first_32 = body_cell.begin_parse().load_uint(32)
+    check("body_cell starts with signing opcode (regression: was reversed)", first_32 == 0x7369676e)
+
+    # Smoke test: send_pal_tokens with mocked API (seqno > 0, no StateInit)
+    sent_boc_b64 = None
+
+    async def fake_post(endpoint, payload):
+        nonlocal sent_boc_b64
+        if endpoint == "runGetMethod" and payload.get("method") == "seqno":
+            return {"exit_code": 0, "stack": [["num", "0x1"]]}
+        if endpoint == "runGetMethod" and payload.get("method") == "get_wallet_address":
+            cell = Builder().store_address(Address(test_addr)).end_cell()
+            return {"stack": [["cell", {"bytes": base64.b64encode(cell.to_boc()).decode()}]]}
+        if endpoint == "sendBoc":
+            sent_boc_b64 = payload["boc"]
+            return {"hash": "deadbeefcafe0000"}
+        return {}
+
+    async def run_transfer(seqno_hex):
+        nonlocal sent_boc_b64
+        sent_boc_b64 = None
+
+        async def post(endpoint, payload):
+            if endpoint == "runGetMethod" and payload.get("method") == "seqno":
+                return {"exit_code": 0, "stack": [["num", seqno_hex]]}
+            return await fake_post(endpoint, payload)
+
+        jt2 = JettonTransfer(config)
+        jt2._api_post = post
+        return await jt2.send_pal_tokens(test_addr, 5.0)
+
+    tx = asyncio.run(run_transfer("0x1"))
+    check("send_pal_tokens returns hash", tx == "deadbeefcafe0000")
+    check("BOC was submitted to sendBoc", sent_boc_b64 is not None)
+
+    boc_bytes = base64.b64decode(sent_boc_b64)
+    cells = Cell.from_boc(boc_bytes)
+    check("submitted BOC deserializes to at least one cell", len(cells) >= 1)
+
+    # Smoke test: seqno=0 path (StateInit included for wallet deployment)
+    tx0 = asyncio.run(run_transfer("0x0"))
+    check("send_pal_tokens seqno=0 returns hash", tx0 == "deadbeefcafe0000")
+    check("seqno=0 BOC was submitted", sent_boc_b64 is not None)
+    boc0 = Cell.from_boc(base64.b64decode(sent_boc_b64))
+    check("seqno=0 BOC deserializes", len(boc0) >= 1)
+
+
 if __name__ == "__main__":
     test_config()
     test_utils()
@@ -597,6 +682,7 @@ if __name__ == "__main__":
     test_confirm_flow()
     test_dm_flow()
     test_menu()
+    test_jetton()
 
     print(f"\n{'=' * 50}")
     print(f"Results: {PASS} passed, {FAIL} failed")
