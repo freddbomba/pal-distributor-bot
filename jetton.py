@@ -6,12 +6,17 @@ import time
 from typing import Optional
 
 import aiohttp
-from tonsdk.boc import Cell, begin_cell
-from tonsdk.utils import bytes_to_b64str, Address
+from pytoniq_core.boc import Builder, Cell
+from pytoniq_core.boc.address import Address
+from pytoniq_core.crypto.keys import mnemonic_to_wallet_key
+from pytoniq_core.crypto.signature import sign_message
+from pytoniq import Address as PyAddr
+from pytoniq.contract.wallets.wallet_v5 import WalletV5R1, WalletV5WalletID, WALLET_V5_R1_CODE
+from pytoniq_core import ExternalMsgInfo, MessageAny
+from pytoniq_core.tlb.account import StateInit
 
 logger = logging.getLogger(__name__)
 
-# Jetton transfer opcode
 JETTON_TRANSFER_OP = 0x0F8A7EA5
 
 
@@ -28,13 +33,10 @@ class JettonTransfer:
         self._wallet_id = None
 
     def _get_signing_params(self):
-        """Lazily derive W5R1 key pair and wallet_id from mnemonic."""
         if self._priv_k is None:
-            from pytoniq_core.crypto.keys import mnemonic_to_wallet_key
-            from pytoniq.contract.wallets.wallet_v5 import WalletV5WalletID
             self._pub_k, self._priv_k = mnemonic_to_wallet_key(self.treasury_mnemonic)
             self._wallet_id = WalletV5WalletID(network_global_id=-239, workchain=0).pack()
-        return self._priv_k, self._wallet_id
+        return self._pub_k, self._priv_k, self._wallet_id
 
     def _headers(self) -> dict:
         headers = {"Content-Type": "application/json"}
@@ -60,50 +62,36 @@ class JettonTransfer:
                     raise RuntimeError(f"TonCenter API error: {data}")
                 return data["result"]
 
+    def _address_to_slice_b64(self, address: str) -> str:
+        cell = Builder().store_address(Address(address)).end_cell()
+        return base64.b64encode(cell.to_boc()).decode()
+
+    def _parse_address_from_cell(self, cell_b64: str) -> str:
+        cell = Cell.one_from_boc(base64.b64decode(cell_b64))
+        addr = cell.begin_parse().load_address()
+        return addr.to_str(is_user_friendly=True, is_url_safe=True, is_bounceable=True)
+
     async def get_jetton_wallet_address(self, owner_address: str) -> str:
-        """Get the Jetton wallet address for a given owner by calling get_wallet_address on the Jetton master."""
         result = await self._api_post("runGetMethod", {
             "address": self.jetton_master_address,
             "method": "get_wallet_address",
-            "stack": [
-                ["tvm.Slice", self._address_to_slice_b64(owner_address)]
-            ],
+            "stack": [["tvm.Slice", self._address_to_slice_b64(owner_address)]],
         })
         stack = result.get("stack", [])
-        if stack and len(stack) > 0:
+        if stack:
             addr_cell_b64 = stack[0][1].get("bytes", "") if isinstance(stack[0][1], dict) else stack[0][1]
             return self._parse_address_from_cell(addr_cell_b64)
         raise RuntimeError("Could not determine Jetton wallet address")
 
-    def _address_to_slice_b64(self, address: str) -> str:
-        addr = Address(address)
-        cell = begin_cell().store_address(addr).end_cell()
-        return bytes_to_b64str(cell.to_boc())
-
-    def _parse_address_from_cell(self, cell_b64: str) -> str:
-        boc_bytes = base64.b64decode(cell_b64)
-        cell = Cell.one_from_boc(boc_bytes)
-        cs = cell.begin_parse()
-        addr = cs.read_msg_addr()
-        return addr.to_string(True, True, True)
-
-    def _build_jetton_transfer_body(
-        self,
-        to_address: str,
-        amount_raw: int,
-        response_address: str,
-        query_id: int = 0,
-        forward_ton_amount: int = 1,
-    ) -> Cell:
-        dest_addr = Address(to_address)
-        resp_addr = Address(response_address)
+    def _build_jetton_transfer_body(self, to_address: str, amount_raw: int, response_address: str,
+                                     query_id: int = 0, forward_ton_amount: int = 1) -> Cell:
         return (
-            begin_cell()
+            Builder()
             .store_uint(JETTON_TRANSFER_OP, 32)
             .store_uint(query_id, 64)
             .store_coins(amount_raw)
-            .store_address(dest_addr)
-            .store_address(resp_addr)
+            .store_address(Address(to_address))
+            .store_address(Address(response_address))
             .store_bit(0)
             .store_coins(forward_ton_amount)
             .store_bit(0)
@@ -111,19 +99,13 @@ class JettonTransfer:
         )
 
     async def get_seqno(self) -> int:
-        """Get current sequence number for the treasury wallet.
-        
-        If the wallet is not yet deployed (exit_code -13), returns 0
-        so that send_pal_tokens will include a StateInit to deploy it.
-        """
         result = await self._api_post("runGetMethod", {
             "address": self.treasury_address,
             "method": "seqno",
             "stack": [],
         })
-        exit_code = result.get("exit_code", 0)
-        if exit_code != 0:
-            logger.warning(f"seqno call returned exit_code={exit_code} — wallet likely uninitialized")
+        if result.get("exit_code", 0) != 0:
+            logger.warning(f"seqno exit_code={result.get('exit_code')} — wallet likely uninitialized")
             return 0
         stack = result.get("stack", [])
         if stack:
@@ -132,60 +114,45 @@ class JettonTransfer:
 
     async def send_pal_tokens(self, to_address: str, amount: float) -> str:
         """Execute a PAL Jetton transfer from treasury to recipient."""
-        from pytoniq.contract.wallets.wallet_v5 import WalletV5R1, sign_message, WALLET_V5_R1_CODE
-        from pytoniq_core import Address as PyAddr, ExternalMsgInfo, MessageAny, Builder as PBuilder, Cell as PCell
-        from pytoniq_core.tlb.account import StateInit
-
-        priv_k, wallet_id = self._get_signing_params()
+        pub_k, priv_k, wallet_id = self._get_signing_params()
 
         amount_raw = int(amount * (10 ** self.pal_decimals))
-
         jetton_wallet_addr = await self.get_jetton_wallet_address(self.treasury_address)
         logger.info(f"Treasury Jetton wallet: {jetton_wallet_addr}")
 
-        # Build Jetton body with tonsdk, convert to pytoniq Cell via BOC
-        body_tonsdk = self._build_jetton_transfer_body(
+        jetton_body = self._build_jetton_transfer_body(
             to_address=to_address,
             amount_raw=amount_raw,
             response_address=self.treasury_address,
         )
-        body_pytoniq = PCell.one_from_boc(bytes(body_tonsdk.to_boc(False)))
 
         seqno = await self.get_seqno()
 
-        # Build W5R1 internal message (treasury → its Jetton wallet)
         internal_msg = WalletV5R1.create_wallet_internal_message(
             destination=PyAddr(jetton_wallet_addr),
             send_mode=3,
-            value=int(0.05 * 1e9),  # 0.05 TON for gas
-            body=body_pytoniq,
+            value=int(0.05 * 1e9),
+            body=jetton_body,
         )
 
-        # Build W5R1 signed message body
-        signing_msg = PBuilder().store_uint(0x7369676e, 32)  # signed external op
-        signing_msg.store_uint(wallet_id, 32)
-        if seqno == 0:
-            signing_msg.store_uint(2**32 - 1, 32)
-        else:
-            signing_msg.store_uint(int(time.time()) + 120, 32)  # valid_until
-        signing_msg.store_uint(seqno, 32)
-        signing_msg.store_cell(WalletV5R1.pack_actions([internal_msg]))
-        signing_msg_cell = signing_msg.end_cell()
+        signing_msg = (
+            Builder()
+            .store_uint(0x7369676e, 32)
+            .store_uint(wallet_id, 32)
+            .store_uint(2**32 - 1 if seqno == 0 else int(time.time()) + 120, 32)
+            .store_uint(seqno, 32)
+            .store_cell(WalletV5R1.pack_actions([internal_msg]))
+            .end_cell()
+        )
 
-        signature = sign_message(signing_msg_cell.hash, priv_k)
-        # W5R1: signature (512 bits) must come first, then the signed body
-        body_cell = PBuilder().store_bytes(signature).store_cell(signing_msg_cell).end_cell()
+        signature = sign_message(signing_msg.hash, priv_k)
+        body_cell = Builder().store_cell(signing_msg).store_bytes(signature).end_cell()
 
-        # Wrap in external message and serialize to BOC
-        # When seqno == 0 the wallet contract hasn't been deployed yet.
-        # We must include a StateInit (code + data) so the blockchain
-        # deploys the W5R1 smart contract on the first outgoing message.
         if seqno == 0:
-            data_cell = WalletV5R1.create_data_cell(
-                public_key=self._pub_k,
-                wallet_id=wallet_id,
+            state_init = StateInit(
+                code=WALLET_V5_R1_CODE,
+                data=WalletV5R1.create_data_cell(public_key=pub_k, wallet_id=wallet_id),
             )
-            state_init = StateInit(code=WALLET_V5_R1_CODE, data=data_cell)
             logger.info("First transaction — including StateInit to deploy wallet")
         else:
             state_init = None
@@ -203,7 +170,6 @@ class JettonTransfer:
         return msg_hash
 
     async def get_pal_balance(self) -> float:
-        """Query treasury's PAL token balance."""
         try:
             jetton_wallet_addr = await self.get_jetton_wallet_address(self.treasury_address)
             result = await self._api_post("runGetMethod", {
@@ -220,11 +186,8 @@ class JettonTransfer:
         return 0.0
 
     async def get_ton_balance(self) -> float:
-        """Query treasury's TON balance for gas."""
         try:
-            result = await self._api_get("getAddressBalance", {
-                "address": self.treasury_address
-            })
+            result = await self._api_get("getAddressBalance", {"address": self.treasury_address})
             return int(result) / 1_000_000_000
         except Exception as e:
             logger.error(f"Failed to get TON balance: {e}")
